@@ -1,0 +1,5 @@
+grpcio
+grpcio-tools
+torch
+Pillow
+git+https://github.com/openai/CLIP.git

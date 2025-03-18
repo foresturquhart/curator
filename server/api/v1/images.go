@@ -1,0 +1,658 @@
+package v1
+
+import (
+	"crypto/md5"
+	"crypto/sha1"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"github.com/foresturquhart/curator/server/container"
+	"github.com/foresturquhart/curator/server/models"
+	"github.com/foresturquhart/curator/server/repositories"
+	"github.com/foresturquhart/curator/server/utils"
+	"github.com/labstack/echo/v4"
+	"github.com/pgvector/pgvector-go"
+	"github.com/rs/zerolog/log"
+	"image"
+	_ "image/gif"
+	_ "image/jpeg"
+	_ "image/png"
+	"io"
+	"mime/multipart"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+type ImageHandler struct {
+	container  *container.Container
+	repository *repositories.ImageRepository
+}
+
+func NewImageHandler(c *container.Container, repo *repositories.ImageRepository) *ImageHandler {
+	return &ImageHandler{
+		container:  c,
+		repository: repo,
+	}
+}
+
+func RegisterImageRoutes(e *echo.Echo, c *container.Container, repo *repositories.ImageRepository) {
+	handler := NewImageHandler(c, repo)
+
+	v1 := e.Group("/v1")
+	images := v1.Group("/images")
+
+	// Create
+	images.POST("", handler.CreateImage)
+	images.GET("", handler.ListImages)
+	images.GET("/:id", handler.GetImage)
+	images.PUT("/:id", handler.UpdateImage)
+	images.DELETE("/:id", handler.DeleteImage)
+	images.POST("/search", handler.SearchImages)
+}
+
+func (h *ImageHandler) CreateImage(c echo.Context) error {
+	ctx := c.Request().Context()
+
+	// Ensure the request is multipart form data
+	if !strings.Contains(c.Request().Header.Get("Content-Type"), "multipart/form-data") {
+		return echo.NewHTTPError(http.StatusBadRequest, "Expected multipart form data")
+	}
+
+	// Parse form
+	if err := c.Request().ParseMultipartForm(32 << 20); err != nil { // 32MB max
+		return echo.NewHTTPError(http.StatusBadRequest, "Error parsing form: "+err.Error())
+	}
+
+	// Get the file
+	file, fileHeader, err := c.Request().FormFile("image")
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "Error getting image file: "+err.Error())
+	}
+	defer file.Close()
+
+	// Read the first 512 bytes to detect content type
+	buffer := make([]byte, 512)
+	_, err = file.Read(buffer)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "Error reading file: "+err.Error())
+	}
+
+	// Reset file pointer to beginning
+	_, err = file.Seek(0, io.SeekStart)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error processing file: "+err.Error())
+	}
+
+	// Detect content type from file contents, not extension
+	contentType := http.DetectContentType(buffer)
+	log.Info().Str("contentType", contentType).Msg("Detected content type")
+
+	// Map MIME types to our internal format types
+	var format models.ImageFormat
+	switch {
+	case strings.HasPrefix(contentType, "image/jpeg"):
+		format = models.FormatJPEG
+	case strings.HasPrefix(contentType, "image/png"):
+		format = models.FormatPNG
+	case strings.HasPrefix(contentType, "image/gif"):
+		format = models.FormatGIF
+	default:
+		return echo.NewHTTPError(http.StatusBadRequest, "Unsupported image format: "+contentType)
+	}
+
+	// Calculate file hashes
+	md5Hash, sha1Hash, err := calculateFileHashes(file)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error calculating file hashes: "+err.Error())
+	}
+
+	// Reset file pointer to beginning
+	_, err = file.Seek(0, io.SeekStart)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error processing file: "+err.Error())
+	}
+
+	// Check for duplicate image by hash
+	existingFilter := models.ImageFilter{
+		Hash: md5Hash,
+	}
+
+	existingImages, err := h.repository.Search(ctx, existingFilter)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error checking for duplicates: "+err.Error())
+	}
+
+	if existingImages.TotalCount > 0 {
+		return echo.NewHTTPError(http.StatusConflict, "Duplicate image detected with MD5: "+md5Hash)
+	}
+
+	// Get image dimensions
+	imgConfig, _, err := image.DecodeConfig(file)
+	if err != nil {
+		log.Error().Err(err).Msg("Error decoding image config")
+		return echo.NewHTTPError(http.StatusBadRequest, "Error reading image dimensions: "+err.Error())
+	}
+
+	// Reset file pointer to beginning
+	_, err = file.Seek(0, io.SeekStart)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error processing file: "+err.Error())
+	}
+
+	// Get embedding from CLIP service
+	embedding, err := h.container.Clip.GetEmbeddingFromReader(ctx, file)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error getting image embedding: "+err.Error())
+	}
+
+	// Reset file pointer to beginning
+	_, err = file.Seek(0, io.SeekStart)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error processing file: "+err.Error())
+	}
+
+	// Parse metadata from form
+	var metadata struct {
+		Title       *string               `json:"title"`
+		Description *string               `json:"description"`
+		Tags        []*models.ImageTag    `json:"tags"`
+		People      []*models.ImagePerson `json:"people"`
+		Sources     []*models.ImageSource `json:"sources"`
+	}
+
+	if metadataJSON := c.FormValue("metadata"); metadataJSON != "" {
+		if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, "Invalid metadata JSON: "+err.Error())
+		}
+	}
+
+	// Wrap embedding into vector type
+	imageEmbedding := pgvector.NewVector(embedding)
+
+	// Create image model
+	imageModel := &models.Image{
+		Filename:    fileHeader.Filename,
+		MD5:         md5Hash,
+		SHA1:        sha1Hash,
+		Width:       imgConfig.Width,
+		Height:      imgConfig.Height,
+		Format:      format,
+		Size:        fileHeader.Size,
+		Embedding:   &imageEmbedding,
+		Title:       metadata.Title,
+		Description: metadata.Description,
+		Tags:        metadata.Tags,
+		People:      metadata.People,
+		Sources:     metadata.Sources,
+	}
+
+	// Store in database
+	if err := h.repository.Upsert(ctx, imageModel); err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error storing image: "+err.Error())
+	}
+
+	filePath := filepath.Join(h.container.Config.FileStoragePath, imageModel.GetStoredName())
+
+	log.Info().Msg(filePath)
+
+	// Ensure directory exists
+	if err := os.MkdirAll(h.container.Config.FileStoragePath, 0755); err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error creating storage directory: "+err.Error())
+	}
+
+	// Create destination file
+	dst, err := os.Create(filePath)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error creating file: "+err.Error())
+	}
+	defer dst.Close()
+
+	// Copy file to destination
+	_, err = io.Copy(dst, file)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error writing file: "+err.Error())
+	}
+
+	return c.JSON(http.StatusCreated, imageModel)
+}
+
+// calculateFileHashes calculates MD5 and SHA1 hashes of a file
+func calculateFileHashes(file multipart.File) (string, string, error) {
+	md5Hasher := md5.New()
+	sha1Hasher := sha1.New()
+
+	multiWriter := io.MultiWriter(md5Hasher, sha1Hasher)
+
+	if _, err := io.Copy(multiWriter, file); err != nil {
+		return "", "", err
+	}
+
+	// Reset file pointer to beginning
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return "", "", err
+	}
+
+	md5Hash := hex.EncodeToString(md5Hasher.Sum(nil))
+	sha1Hash := hex.EncodeToString(sha1Hasher.Sum(nil))
+
+	return md5Hash, sha1Hash, nil
+}
+
+// applyPaginationAndSorting applies common pagination and sorting parameters to an image filter
+func applyPaginationAndSorting(filter *models.ImageFilter, limit *int, startingAfter *string, sortBy *string, sortDirection *string, randomSeed *string, encryptionKey string) error {
+	// Apply limit
+	if limit != nil {
+		filter.Limit = *limit
+	}
+
+	// Apply cursor
+	if startingAfter != nil {
+		cursor, err := utils.DecryptCursor(*startingAfter, encryptionKey)
+		if err != nil {
+			return fmt.Errorf("invalid cursor: %w", err)
+		}
+		filter.StartingAfter = cursor
+	}
+
+	// Apply sort field
+	if sortBy != nil {
+		switch *sortBy {
+		case "relevance":
+			filter.SortBy = models.SortByRelevance
+		case "created_at":
+			filter.SortBy = models.SortByCreatedAt
+		case "title":
+			filter.SortBy = models.SortByTitle
+		case "tag_count":
+			filter.SortBy = models.SortByTagCount
+		case "dimensions":
+			filter.SortBy = models.SortByDimensions
+		case "random":
+			filter.SortBy = models.SortByRandom
+			if randomSeed != nil {
+				filter.RandomSeed = randomSeed
+			} else {
+				return fmt.Errorf("seed required for random sort")
+			}
+		default:
+			return fmt.Errorf("invalid sort_by option: %s", *sortBy)
+		}
+	}
+
+	// Apply sort direction
+	if sortDirection != nil {
+		switch *sortDirection {
+		case "asc":
+			filter.SortDirection = models.SortDirectionAsc
+		case "desc":
+			filter.SortDirection = models.SortDirectionDesc
+		default:
+			return fmt.Errorf("invalid sort_direction option: %s", *sortDirection)
+		}
+	}
+
+	return nil
+}
+
+// formatPaginatedResponse creates a standardized response with pagination info
+func formatPaginatedResponse(result *models.PaginatedImageResult, encryptionKey string) (map[string]interface{}, error) {
+	response := map[string]interface{}{
+		"data":        result.Data,
+		"has_more":    result.HasMore,
+		"total_count": result.TotalCount,
+	}
+
+	if result.NextCursor != nil {
+		cursor, err := utils.EncryptCursor(result.NextCursor, encryptionKey)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt cursor: %w", err)
+		}
+		response["next_cursor"] = cursor
+	}
+
+	return response, nil
+}
+
+type ListImagesRequest struct {
+	Limit         *int    `query:"limit"`
+	StartingAfter *string `query:"starting_after"`
+	SortBy        *string `query:"sort_by"`
+	SortDirection *string `query:"sort_direction"`
+	RandomSeed    *string `query:"random_seed"`
+}
+
+func (h *ImageHandler) ListImages(c echo.Context) error {
+	var req ListImagesRequest
+	if err := c.Bind(&req); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid request data")
+	}
+
+	ctx := c.Request().Context()
+	filter := models.ImageFilter{}
+
+	// Apply pagination and sorting
+	err := applyPaginationAndSorting(&filter, req.Limit, req.StartingAfter,
+		req.SortBy, req.SortDirection, req.RandomSeed,
+		h.container.Config.EncryptionKey)
+
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	// Execute search
+	images, err := h.repository.Search(ctx, filter)
+	if err != nil {
+		log.Error().Err(err).Msg("Error listing images")
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to list images")
+	}
+
+	// Format response
+	response, err := formatPaginatedResponse(images, h.container.Config.EncryptionKey)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+
+	return c.JSON(http.StatusOK, response)
+}
+
+func (h *ImageHandler) GetImage(c echo.Context) error {
+	id := c.Param("id")
+	ctx := c.Request().Context()
+
+	imageModel, err := h.repository.GetByUUID(ctx, id)
+	if err != nil {
+		if errors.Is(err, utils.ErrImageNotFound) {
+			return echo.NewHTTPError(http.StatusNotFound, "Image not found")
+		}
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to retrieve image")
+	}
+
+	return c.JSON(http.StatusCreated, imageModel)
+}
+
+func (h *ImageHandler) UpdateImage(c echo.Context) error {
+	id := c.Param("id")
+	ctx := c.Request().Context()
+
+	// Get existing image
+	existingImage, err := h.repository.GetByUUID(ctx, id)
+	if err != nil {
+		if errors.Is(err, utils.ErrImageNotFound) {
+			return echo.NewHTTPError(http.StatusNotFound, "Image not found")
+		}
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to retrieve image: "+err.Error())
+	}
+
+	// Parse update data
+	var updateData struct {
+		Title       *string               `json:"title"`
+		Description *string               `json:"description"`
+		Tags        []*models.ImageTag    `json:"tags"`
+		People      []*models.ImagePerson `json:"people"`
+		Sources     []*models.ImageSource `json:"sources"`
+	}
+
+	// TODO: the requests shouldn't use models.ImageTag, models.ImagePerson or models.ImageSource, since we don't want to accept fields like name or added_at and stuff
+
+	if err := c.Bind(&updateData); err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "Invalid request data: "+err.Error())
+	}
+
+	// Update only mutable fields
+	if updateData.Title != nil {
+		existingImage.Title = updateData.Title
+	}
+
+	if updateData.Description != nil {
+		existingImage.Description = updateData.Description
+	}
+
+	if updateData.Tags != nil {
+		existingImage.Tags = updateData.Tags
+	}
+
+	if updateData.People != nil {
+		existingImage.People = updateData.People
+	}
+
+	if updateData.Sources != nil {
+		existingImage.Sources = updateData.Sources
+	}
+
+	// Save updates
+	if err := h.repository.Upsert(ctx, existingImage); err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to update image: "+err.Error())
+	}
+
+	return c.JSON(http.StatusOK, existingImage)
+}
+
+func (h *ImageHandler) DeleteImage(c echo.Context) error {
+	id := c.Param("id")
+	ctx := c.Request().Context()
+
+	// Get the image to find its file path before deletion
+	imageModel, err := h.repository.GetByUUID(ctx, id)
+	if err != nil {
+		if errors.Is(err, utils.ErrImageNotFound) {
+			return echo.NewHTTPError(http.StatusNotFound, "Image not found")
+		}
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to retrieve image: "+err.Error())
+	}
+
+	// Determine stored file path
+	filePath := filepath.Join(h.container.Config.FileStoragePath, imageModel.GetStoredName())
+
+	// Delete from database (this also handles OpenSearch and Qdrant deletion)
+	if err := h.repository.Delete(ctx, id); err != nil {
+		if errors.Is(err, utils.ErrImageNotFound) {
+			return echo.NewHTTPError(http.StatusNotFound, "Image not found")
+		}
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to delete image from database: "+err.Error())
+	}
+
+	// Delete the file
+	if err := os.Remove(filePath); err != nil {
+		// Log the error but don't fail the request if the file doesn't exist
+		if !os.IsNotExist(err) {
+			log.Error().Err(err).Str("path", filePath).Msg("Failed to delete image file")
+		}
+	}
+
+	return c.NoContent(http.StatusNoContent)
+}
+
+type SearchImagesRequest struct {
+	// Full text search
+	Title       *string `query:"title"`
+	Description *string `query:"description"`
+
+	// Basic filtering
+	Hash *string `query:"hash"`
+
+	// Dimension filtering
+	MinWidth  *int `json:"min_width"`
+	MaxWidth  *int `json:"max_width"`
+	MinHeight *int `json:"min_height"`
+	MaxHeight *int `json:"max_height"`
+
+	// Date filtering
+	SinceDate  *string `json:"since_date"`
+	BeforeDate *string `json:"before_date"`
+
+	// Vector similarity
+	SimilarToID         *string  `json:"similar_to_id"`
+	SimilarityThreshold *float32 `json:"similarity_threshold"`
+
+	// Tag filtering
+	TagFilters []models.ImageTagFilter `json:"tag_filters"`
+
+	// Person filtering
+	PersonFilters []models.ImagePersonFilter `json:"person_filters"`
+
+	// Source filtering
+	Sources []string `json:"sources"`
+
+	// Sorting & pagination
+	Limit         *int    `query:"limit"`
+	StartingAfter *string `query:"starting_after"`
+	SortBy        *string `query:"sort_by"`
+	SortDirection *string `query:"sort_direction"`
+
+	// Deterministic shuffle seed
+	RandomSeed *string `query:"random_seed"`
+}
+
+func (h *ImageHandler) SearchImages(c echo.Context) error {
+	isMultipart := c.Request().Header.Get("Content-Type") != "" &&
+		strings.Contains(c.Request().Header.Get("Content-Type"), "multipart/form-data")
+
+	var req SearchImagesRequest
+
+	// If it's a multipart form, extract the JSON from the "data" field manually.
+	if isMultipart {
+		jsonData := c.FormValue("data")
+		if jsonData == "" {
+			return echo.NewHTTPError(http.StatusBadRequest, "Missing JSON data in form")
+		}
+		if err := json.Unmarshal([]byte(jsonData), &req); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, "Invalid JSON in form data")
+		}
+	} else {
+		// Fallback to automatic binding for non-multipart requests.
+		if err := c.Bind(&req); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, "Invalid request data")
+		}
+	}
+
+	ctx := c.Request().Context()
+
+	// Build filter from request
+	filter := models.ImageFilter{}
+
+	// Apply pagination and sorting
+	err := applyPaginationAndSorting(&filter, req.Limit, req.StartingAfter,
+		req.SortBy, req.SortDirection, req.RandomSeed,
+		h.container.Config.EncryptionKey)
+
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+
+	// Apply basic filtering
+	if req.Title != nil {
+		filter.Title = *req.Title
+	}
+
+	if req.Description != nil {
+		filter.Description = *req.Description
+	}
+
+	if req.Hash != nil {
+		filter.Hash = *req.Hash
+	}
+
+	// Apply dimension filtering
+	if req.MinWidth != nil {
+		filter.MinWidth = *req.MinWidth
+	}
+
+	if req.MaxWidth != nil {
+		filter.MaxWidth = *req.MaxWidth
+	}
+
+	if req.MinHeight != nil {
+		filter.MinHeight = *req.MinHeight
+	}
+
+	if req.MaxHeight != nil {
+		filter.MaxHeight = *req.MaxHeight
+	}
+
+	// Apply date filtering
+	if req.SinceDate != nil {
+		// Parse time from string
+		sinceTime, err := time.Parse(time.RFC3339, *req.SinceDate)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, "Invalid since_date format, expected RFC3339")
+		}
+		filter.SinceDate = &sinceTime
+	}
+
+	if req.BeforeDate != nil {
+		// Parse time from string
+		beforeTime, err := time.Parse(time.RFC3339, *req.BeforeDate)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, "Invalid before_date format, expected RFC3339")
+		}
+		filter.BeforeDate = &beforeTime
+	}
+
+	// Apply vector similarity
+	if req.SimilarToID != nil {
+		filter.SimilarToID = *req.SimilarToID
+	}
+
+	// Apply tag filters
+	if len(req.TagFilters) > 0 {
+		filter.TagFilters = req.TagFilters
+	}
+
+	// Apply person filters
+	if len(req.PersonFilters) > 0 {
+		filter.PersonFilters = req.PersonFilters
+	}
+
+	// Apply source filters
+	if len(req.Sources) > 0 {
+		filter.Sources = req.Sources
+	}
+
+	// Apply similarity threshold
+	if req.SimilarityThreshold != nil {
+		filter.SimilarityThreshold = *req.SimilarityThreshold
+	}
+
+	// Process file upload if present
+	if isMultipart {
+		file, err := c.FormFile("image")
+		if err == nil { // Only process if there's an image file
+			src, err := file.Open()
+			if err != nil {
+				return echo.NewHTTPError(http.StatusBadRequest, "Unable to open uploaded file")
+			}
+			defer src.Close()
+
+			// Get embedding from the image file
+			embedding, err := h.container.Clip.GetEmbeddingFromReader(ctx, src)
+			if err != nil {
+				return echo.NewHTTPError(http.StatusInternalServerError, "Failed to get image embedding")
+			}
+			vecEmbedding := pgvector.NewVector(embedding)
+			filter.SimilarToEmbedding = &vecEmbedding
+
+			// Force sort by similarity
+			filter.SortBy = models.SortByRelevance
+			filter.SortDirection = models.SortDirectionDesc
+		}
+	}
+
+	// Execute search
+	images, err := h.repository.Search(ctx, filter)
+	if err != nil {
+		log.Error().Err(err).Msg("Error searching images")
+		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to search images")
+	}
+
+	// Format response
+	response, err := formatPaginatedResponse(images, h.container.Config.EncryptionKey)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, err.Error())
+	}
+
+	return c.JSON(http.StatusOK, response)
+}

@@ -1,0 +1,123 @@
+services:
+  opensearch:
+    image: opensearchproject/opensearch:2.19.1
+    container_name: opensearch
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=${OPENSEARCH_JAVA_OPTS}"
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_PASSWORD}
+      - "DISABLE_INSTALL_DEMO_CONFIG=true"
+      - "DISABLE_SECURITY_PLUGIN=true"
+    volumes:
+      - opensearch_data:/usr/share/opensearch/data:rw
+    ports:
+      - "${OPENSEARCH_PORT}:9200"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl --output /dev/null --silent --head --fail http://opensearch:${OPENSEARCH_PORT}",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+
+  opensearch_init:
+    image: opensearchproject/opensearch:2.19.1
+    container_name: opensearch_init
+    restart: 'no'
+    environment:
+      - OPENSEARCH_PORT=${OPENSEARCH_PORT}
+    volumes:
+      - ${PWD}/data/opensearch:/data:ro
+    command: >
+      bash -c '
+        echo "Importing indexes from /data/indexes";
+        for file in /data/indexes/*.json; do
+          index_name=$$(basename $$file .json);
+          echo "Creating index $$index_name from $$file";
+          response=$(curl -s -X PUT "http://opensearch:${OPENSEARCH_PORT}/$$index_name" -H "Content-Type: application/json" -d "@$$file");
+          if echo "$$response" | grep -q "resource_already_exists_exception"; then
+            echo "Index $$index_name already exists, skipping..."
+          else
+            echo "$$response"
+          fi;
+        done;
+        echo "All indexes imported successfully.";
+      '
+    depends_on:
+      opensearch:
+        condition: service_healthy
+
+  opensearch_dashboards:
+    image: opensearchproject/opensearch-dashboards:2.19.1
+    container_name: opensearch_dashboards
+    environment:
+      OPENSEARCH_HOSTS: '["http://opensearch:9200"]'
+      DISABLE_SECURITY_DASHBOARDS_PLUGIN: 'true'
+    ports:
+      - "${OPENSEARCH_DASHBOARDS_PORT}:5601"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+      opensearch_init:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -s -I http://opensearch_dashboards:5601 | grep -q 'HTTP/1.1 302 Found'",
+        ]
+      interval: 10s
+      timeout: 10s
+      retries: 120
+
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data:rw
+      - ${PWD}/data/postgres/schema.sql:/docker-entrypoint-initdb.d/schema.sql:ro
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  qdrant:
+    image: qdrant/qdrant:v1.13.4
+    container_name: qdrant
+    volumes:
+      - qdrant_data:/qdrant/storage:rw
+    ports:
+      - "${QDRANT_PORT}:6334"
+
+  clip:
+    build:
+      context: ./clip
+      dockerfile: Dockerfile
+    container_name: clip
+    environment:
+      LOG_LEVEL: debug
+      PORT: 6200
+    ports:
+      - "${CLIP_PORT}:6200"
+
+volumes:
+  opensearch_data:
+  postgres_data:
+  qdrant_data:

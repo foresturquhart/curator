@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package clip;
+
+// The CLIP service definition.
+service CLIPService {
+  // Receives an image and returns its embedding.
+  rpc GetImageEmbedding (ImageRequest) returns (EmbeddingResponse) {}
+}
+
+// Request message containing the image bytes.
+message ImageRequest {
+  bytes image_data = 1;
+}
+
+// Response message containing the 512-dimensional embedding.
+message EmbeddingResponse {
+  repeated float embedding = 1;
+}

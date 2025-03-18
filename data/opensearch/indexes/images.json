@@ -1,0 +1,140 @@
+{
+    "mappings": {
+        "properties": {
+            "id": {
+                "type": "long"
+            },
+            "uuid": {
+                "type": "keyword"
+            },
+            "filename": {
+                "type": "text",
+                "fields": {
+                    "keyword": {
+                        "type": "keyword",
+                        "ignore_above": 256
+                    }
+                }
+            },
+            "md5": {
+                "type": "keyword"
+            },
+            "sha1": {
+                "type": "keyword"
+            },
+            "width": {
+                "type": "integer"
+            },
+            "height": {
+                "type": "integer"
+            },
+            "pixel_count": {
+                "type": "long"
+            },
+            "format": {
+                "type": "keyword"
+            },
+            "size": {
+                "type": "long"
+            },
+            "title": {
+                "type": "text",
+                "analyzer": "english",
+                "fields": {
+                    "keyword": {
+                        "type": "keyword",
+                        "ignore_above": 256
+                    }
+                }
+            },
+            "description": {
+                "type": "text",
+                "analyzer": "english",
+                "fields": {
+                    "keyword": {
+                        "type": "keyword",
+                        "ignore_above": 256
+                    }
+                }
+            },
+            "created_at": {
+                "type": "date"
+            },
+            "updated_at": {
+                "type": "date"
+            },
+            "tags": {
+                "type": "nested",
+                "properties": {
+                    "id": {
+                        "type": "long"
+                    },
+                    "uuid": {
+                        "type": "keyword"
+                    },
+                    "name": {
+                        "type": "keyword"
+                    },
+                    "added_at": {
+                        "type": "date"
+                    }
+                }
+            },
+            "tags_count": {
+                "type": "integer"
+            },
+            "people": {
+                "type": "nested",
+                "properties": {
+                    "id": {
+                        "type": "long"
+                    },
+                    "uuid": {
+                        "type": "keyword"
+                    },
+                    "name": {
+                        "type": "text",
+                        "fields": {
+                            "keyword": {
+                                "type": "keyword",
+                                "ignore_above": 256
+                            }
+                        }
+                    },
+                    "role": {
+                        "type": "keyword"
+                    },
+                    "added_at": {
+                        "type": "date"
+                    }
+                }
+            },
+            "sources": {
+                "type": "nested",
+                "properties": {
+                    "url": {
+                        "type": "keyword"
+                    },
+                    "title": {
+                        "type": "text",
+                        "fields": {
+                            "keyword": {
+                                "type": "keyword",
+                                "ignore_above": 256
+                            }
+                        }
+                    },
+                    "description": {
+                        "type": "text",
+                        "fields": {
+                            "keyword": {
+                                "type": "keyword",
+                                "ignore_above": 256
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

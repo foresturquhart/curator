@@ -1,0 +1,6 @@
+.idea
+.vscode
+.env
+server/images
+server/clip/clip.pb.go
+server/clip/clip_grpc.pb.go
