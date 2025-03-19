@@ -3,9 +3,10 @@ package clip
 import (
 	"context"
 	"fmt"
+	"io"
+
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"io"
 )
 
 type Client struct {

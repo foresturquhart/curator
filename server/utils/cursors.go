@@ -2,12 +2,14 @@ package utils
 
 import (
 	"encoding/json"
+
 	"github.com/btcsuite/btcd/btcutil/base58"
+	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
 	"github.com/xxtea/xxtea-go/xxtea"
 )
 
 // EncryptCursor encrypts the cursor
-func EncryptCursor(input []interface{}, key string) (string, error) {
+func EncryptCursor(input []types.FieldValue, key string) (string, error) {
 	// Serialize the input to JSON
 	jsonData, err := json.Marshal(input)
 	if err != nil {
@@ -23,7 +25,7 @@ func EncryptCursor(input []interface{}, key string) (string, error) {
 }
 
 // DecryptCursor decrypts the cursor
-func DecryptCursor(input string, key string) ([]interface{}, error) {
+func DecryptCursor(input string, key string) ([]types.FieldValue, error) {
 	// Decode the base58 string to get the encrypted bytes
 	decoded := base58.Decode(input)
 
@@ -31,10 +33,9 @@ func DecryptCursor(input string, key string) ([]interface{}, error) {
 	decryptedBytes := xxtea.Decrypt(decoded, []byte(key))
 
 	// Unmarshal the decrypted JSON back into an array
-	var arr []interface{}
+	var arr []types.FieldValue
 	if err := json.Unmarshal(decryptedBytes, &arr); err != nil {
 		return nil, err
 	}
-
 	return arr, nil
 }

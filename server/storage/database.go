@@ -3,10 +3,11 @@ package storage
 import (
 	"context"
 	"fmt"
+	"time"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	pgxvec "github.com/pgvector/pgvector-go/pgx"
-	"time"
 )
 
 // Database represents a PostgreSQL storage connection pool
@@ -15,12 +16,12 @@ type Database struct {
 }
 
 // NewDatabase creates and configures a new storage connection
-func NewDatabase(url string) (*Database, error) {
+func NewDatabase(connString string) (*Database, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	// Parse the connection config
-	config, err := pgxpool.ParseConfig(url)
+	config, err := pgxpool.ParseConfig(connString)
 	if err != nil {
 		return nil, fmt.Errorf("unable to parse storage config: %w", err)
 	}

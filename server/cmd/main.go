@@ -3,6 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
 	v1 "github.com/foresturquhart/curator/server/api/v1"
 	"github.com/foresturquhart/curator/server/config"
 	"github.com/foresturquhart/curator/server/container"
@@ -10,10 +15,6 @@ import (
 	"github.com/labstack/echo/v4"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
-	"os"
-	"os/signal"
-	"syscall"
-	"time"
 )
 
 func main() {
@@ -36,22 +37,36 @@ func main() {
 	}
 	defer c.Close()
 
-	// Initialize image repository
+	// Initialize repositories
 	imageRepository := repositories.NewImageRepository(c)
-
-	// Initialize images Qdrant collection
-	if err := imageRepository.InitializeQdrantCollection(context.Background()); err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize images collection")
-	}
 	// personRepository := repositories.NewPersonRepository(c)
 	// tagRepository := repositories.NewTagRepository(c)
 
-	// DEVELOPMENT ONLY: Reindex to ensure changes are up to date
-	if err := imageRepository.ReindexAll(context.Background()); err != nil {
-		log.Fatal().Err(err).Msg("Failed to reindex")
+	// Initialize indexes
+	if err := imageRepository.InitializeQdrantCollection(context.Background()); err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize images vector collection")
 	}
-	// personRepository.ReindexAll(context.Background())
-	// tagRepository.ReindexAll(context.Background())
+	if err := imageRepository.InitializeElasticIndex(context.Background()); err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize images search index")
+	}
+	// if err := personRepository.InitializeElasticIndex(context.Background()); err != nil {
+	// 	log.Fatal().Err(err).Msg("Failed to initialize people search index")
+	// }
+	// if err := tagRepository.InitializeElasticIndex(context.Background()); err != nil {
+	// 	log.Fatal().Err(err).Msg("Failed to initialize tag search index")
+	// }
+
+	// DEVELOPMENT ONLY: Reindex to ensure changes are up to date
+
+	if err := imageRepository.ReindexAll(context.Background()); err != nil {
+		log.Fatal().Err(err).Msg("Failed to reindex images")
+	}
+	// if err := personRepository.ReindexAll(context.Background()); err != nil {
+	// 	log.Fatal().Err(err).Msg("Failed to reindex people")
+	// }
+	// if err := tagRepository.ReindexAll(context.Background()); err != nil {
+	// 	log.Fatal().Err(err).Msg("Failed to reindex tags")
+	// }
 
 	// Set up Echo server
 	e := echo.New()
@@ -65,7 +80,7 @@ func main() {
 
 	// Start the server
 	go func() {
-		log.Info().Err(err).Msgf("Starting the server on :%d", cfg.Port)
+		log.Info().Msgf("Starting the server on :%d", cfg.Port)
 		if err := e.Start(fmt.Sprintf(":%d", cfg.Port)); err != nil {
 			log.Info().Msg("Shutting down the server")
 		}

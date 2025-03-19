@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+
 	"github.com/qdrant/go-client/qdrant"
 )
 

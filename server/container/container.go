@@ -6,14 +6,15 @@ import (
 	"github.com/foresturquhart/curator/server/clip"
 	"github.com/foresturquhart/curator/server/config"
 	"github.com/foresturquhart/curator/server/storage"
+	"github.com/foresturquhart/curator/server/storage/elastic"
 )
 
 type Container struct {
-	Config     *config.Config
-	Database   *storage.Database
-	OpenSearch *storage.OpenSearch
-	Qdrant     *storage.Qdrant
-	Clip       *clip.Client
+	Config   *config.Config
+	Database *storage.Database
+	Elastic  *elastic.Elastic
+	Qdrant   *storage.Qdrant
+	Clip     *clip.Client
 }
 
 func NewContainer(cfg *config.Config) (*Container, error) {
@@ -23,10 +24,10 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 		return nil, fmt.Errorf("failed to initialize database: %w", err)
 	}
 
-	// Initialize opensearch client
-	openSearchClient, err := storage.NewOpenSearch(cfg.OpenSearchURL)
+	// Initialize elastic client
+	elasticClient, err := elastic.NewElastic(cfg.ElasticsearchURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize opensearch: %w", err)
+		return nil, fmt.Errorf("failed to initialize elastic: %w", err)
 	}
 
 	// Initialize qdrant client
@@ -35,18 +36,18 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 		return nil, fmt.Errorf("failed to initialize qdrant: %w", err)
 	}
 
-	// Initialize clip service client
-	clipServiceClient, err := clip.NewClient(cfg.ClipServiceURL)
+	// Initialize clip client
+	clipClient, err := clip.NewClient(fmt.Sprintf("%s:%d", cfg.ClipHost, cfg.ClipPort))
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize clip service: %w", err)
+		return nil, fmt.Errorf("failed to initialize clip: %w", err)
 	}
 
 	return &Container{
-		Config:     cfg,
-		Database:   databaseClient,
-		OpenSearch: openSearchClient,
-		Qdrant:     qdrantClient,
-		Clip:       clipServiceClient,
+		Config:   cfg,
+		Database: databaseClient,
+		Elastic:  elasticClient,
+		Qdrant:   qdrantClient,
+		Clip:     clipClient,
 	}, nil
 }
 

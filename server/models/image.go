@@ -3,6 +3,7 @@ package models
 import (
 	"time"
 
+	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
 	"github.com/pgvector/pgvector-go"
 )
 
@@ -40,10 +41,10 @@ const (
 
 // PaginatedImageResult represents a paginated result set
 type PaginatedImageResult struct {
-	Data       []*Image      `json:"data"`        // The actual result images
-	HasMore    bool          `json:"has_more"`    // Whether there are more results available
-	TotalCount int           `json:"total_count"` // Total count of matching images
-	NextCursor []interface{} `json:"next_cursor"` // Cursor for fetching the next page
+	Data       []*Image           `json:"data"`        // The actual result images
+	HasMore    bool               `json:"has_more"`    // Whether there are more results available
+	TotalCount int64              `json:"total_count"` // Total count of matching images
+	NextCursor []types.FieldValue `json:"next_cursor"` // Cursor for fetching the next page
 }
 
 // Image represents an image entity in the system
@@ -158,7 +159,7 @@ type ImageFilter struct {
 	Sources            []string            // Filter for images with any of these source URLs
 
 	// Similarity threshold field
-	SimilarityThreshold float32
+	SimilarityThreshold float64
 
 	// Sorting fields
 	SortBy        SortBy        // Field to sort by (default: created_at)
@@ -168,6 +169,6 @@ type ImageFilter struct {
 	RandomSeed *string
 
 	// Pagination fields
-	Limit         int           // Maximum number of results (default: 50, max: 100)
-	StartingAfter []interface{} // Cursor to start after (forward pagination)
+	Limit         int                // Maximum number of results (default: 50, max: 100)
+	StartingAfter []types.FieldValue // Cursor to start after (forward pagination)
 }

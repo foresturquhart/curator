@@ -6,15 +6,20 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
+
+	"github.com/elastic/go-elasticsearch/v8/esapi"
+	"github.com/elastic/go-elasticsearch/v8/typedapi/core/search"
+	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
+	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/functionboostmode"
+	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/sortorder"
 	"github.com/foresturquhart/curator/server/container"
 	"github.com/foresturquhart/curator/server/models"
 	"github.com/foresturquhart/curator/server/utils"
 	"github.com/jackc/pgx/v5"
-	"github.com/opensearch-project/opensearch-go/v2/opensearchapi"
 	"github.com/pgvector/pgvector-go"
 	"github.com/qdrant/go-client/qdrant"
 	"github.com/rs/zerolog/log"
-	"time"
 )
 
 type ImageRepository struct {
@@ -25,6 +30,14 @@ func NewImageRepository(container *container.Container) *ImageRepository {
 	return &ImageRepository{
 		container: container,
 	}
+}
+
+func (r *ImageRepository) InitializeElasticIndex(ctx context.Context) error {
+	if err := r.container.Elastic.EnsureIndex(ctx, "images"); err != nil {
+		return fmt.Errorf("error ensuring index: %w", err)
+	}
+
+	return nil
 }
 
 func (r *ImageRepository) InitializeQdrantCollection(ctx context.Context) error {
@@ -50,9 +63,9 @@ func (r *ImageRepository) InitializeQdrantCollection(ctx context.Context) error 
 	return nil
 }
 
-func (r *ImageRepository) reindexOpenSearch(ctx context.Context, image *models.Image) error {
+func (r *ImageRepository) reindexElastic(ctx context.Context, image *models.Image) error {
 	// Construct the document to index
-	document := map[string]interface{}{
+	document := map[string]any{
 		"id":          image.ID,
 		"uuid":        image.UUID,
 		"filename":    image.Filename,
@@ -79,9 +92,9 @@ func (r *ImageRepository) reindexOpenSearch(ctx context.Context, image *models.I
 
 	// Add tags
 	if len(image.Tags) > 0 {
-		tags := make([]map[string]interface{}, len(image.Tags))
+		tags := make([]map[string]any, len(image.Tags))
 		for i, tag := range image.Tags {
-			tags[i] = map[string]interface{}{
+			tags[i] = map[string]any{
 				"id":       tag.ID,
 				"uuid":     tag.UUID,
 				"name":     tag.Name,
@@ -93,9 +106,9 @@ func (r *ImageRepository) reindexOpenSearch(ctx context.Context, image *models.I
 
 	// Add people
 	if len(image.People) > 0 {
-		people := make([]map[string]interface{}, len(image.People))
+		people := make([]map[string]any, len(image.People))
 		for i, person := range image.People {
-			people[i] = map[string]interface{}{
+			people[i] = map[string]any{
 				"id":       person.ID,
 				"uuid":     person.UUID,
 				"name":     person.Name,
@@ -108,9 +121,9 @@ func (r *ImageRepository) reindexOpenSearch(ctx context.Context, image *models.I
 
 	// Add sources
 	if len(image.Sources) > 0 {
-		sources := make([]map[string]interface{}, len(image.Sources))
+		sources := make([]map[string]any, len(image.Sources))
 		for _, source := range image.Sources {
-			sourceDoc := map[string]interface{}{
+			sourceDoc := map[string]any{
 				"url": source.URL,
 			}
 
@@ -135,7 +148,7 @@ func (r *ImageRepository) reindexOpenSearch(ctx context.Context, image *models.I
 	}
 
 	// Create index request
-	req := opensearchapi.IndexRequest{
+	req := esapi.IndexRequest{
 		Index:      "images",
 		DocumentID: image.UUID,
 		Body:       bytes.NewReader(payload),
@@ -144,7 +157,7 @@ func (r *ImageRepository) reindexOpenSearch(ctx context.Context, image *models.I
 	}
 
 	// Execute the request
-	res, err := req.Do(ctx, r.container.OpenSearch.GetClient())
+	res, err := req.Do(ctx, r.container.Elastic.GetClient())
 	if err != nil {
 		return fmt.Errorf("error executing index request: %w", err)
 	}
@@ -152,13 +165,13 @@ func (r *ImageRepository) reindexOpenSearch(ctx context.Context, image *models.I
 	// Handle potential close error
 	defer func() {
 		if closeErr := res.Body.Close(); closeErr != nil {
-			fmt.Printf("error closing Elasticsearch response body: %v\n", closeErr)
+			log.Error().Err(err).Msg("Failed to close Elasticsearch response body")
 		}
 	}()
 
 	// Check if the request was successful
 	if res.IsError() {
-		var e map[string]interface{}
+		var e map[string]any
 		if err := json.NewDecoder(res.Body).Decode(&e); err != nil {
 			return fmt.Errorf("error parsing the response body: %w", err)
 		}
@@ -187,8 +200,8 @@ func (r *ImageRepository) reindexQdrant(ctx context.Context, image *models.Image
 }
 
 func (r *ImageRepository) Reindex(ctx context.Context, image *models.Image) error {
-	if err := r.reindexOpenSearch(ctx, image); err != nil {
-		return fmt.Errorf("error indexing image in opensearch: %w", err)
+	if err := r.reindexElastic(ctx, image); err != nil {
+		return fmt.Errorf("error indexing image in Elastic: %w", err)
 	}
 
 	if err := r.reindexQdrant(ctx, image); err != nil {
@@ -230,21 +243,21 @@ func (r *ImageRepository) ReindexAll(ctx context.Context) error {
 
 	// Iterate through IDs and reindex each image
 	for _, id := range imageIDs {
-		fmt.Printf("Reindexing image ID %d...\n", id)
-
 		// Get the image by ID
 		image, err := r.GetByID(ctx, id)
 		if err != nil {
 			// Log the error and continue to the next image
-			fmt.Printf("Error retrieving image ID %d: %v\n", id, err)
+			log.Error().Err(err).Msgf("Error retrieving image for id %d", id)
 			continue
 		}
 
 		// Reindex in a new transaction
 		if err := r.Reindex(ctx, image); err != nil {
-			fmt.Printf("Error reindexing image ID %d: %v\n", id, err)
+			log.Error().Err(err).Msgf("Error reindexing image %s", image.UUID)
 			continue
 		}
+
+		log.Info().Msgf("Reindexed image %s", image.UUID)
 	}
 
 	return nil
@@ -298,7 +311,7 @@ func (r *ImageRepository) GetByID(ctx context.Context, id int64) (*models.Image,
 			rollbackErr := tx.Rollback(ctx)
 			if rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
 				// Just log the rollback error as there's not much we can do at this point
-				fmt.Printf("error rolling back transaction: %v\n", rollbackErr)
+				log.Error().Err(err).Msg("Failed to roll back transaction")
 			}
 		}
 	}()
@@ -364,7 +377,7 @@ func (r *ImageRepository) GetByUUID(ctx context.Context, uuid string) (*models.I
 			rollbackErr := tx.Rollback(ctx)
 			if rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
 				// Just log the rollback error as there's not much we can do at this point
-				fmt.Printf("error rolling back transaction: %v\n", rollbackErr)
+				log.Error().Err(err).Msg("Failed to roll back transaction")
 			}
 		}
 	}()
@@ -395,7 +408,7 @@ func (r *ImageRepository) Upsert(ctx context.Context, image *models.Image) error
 			rollbackErr := tx.Rollback(ctx)
 			if rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
 				// Just log the rollback error as there's not much we can do at this point
-				fmt.Printf("error rolling back transaction: %v\n", rollbackErr)
+				log.Error().Err(err).Msg("Failed to roll back transaction")
 			}
 		}
 	}()
@@ -501,8 +514,7 @@ func (r *ImageRepository) Upsert(ctx context.Context, image *models.Image) error
 
 	// Index in Elasticsearch after successful storage commit
 	if err := r.Reindex(ctx, image); err != nil {
-		// Log the error but don't fail the operation
-		fmt.Printf("error indexing image %s in Elasticsearch: %v\n", image.UUID, err)
+		log.Error().Err(err).Msgf("Failed to index image %s", image.UUID)
 	}
 
 	return nil
@@ -531,7 +543,7 @@ func (r *ImageRepository) syncTagAssociations(ctx context.Context, tx pgx.Tx, im
 
 		// Determine if we need to look up by UUID or name
 		var findQuery string
-		var findParam interface{}
+		var findParam any
 
 		if tag.UUID != "" {
 			findQuery = `SELECT id, uuid, name FROM tags WHERE uuid = $1`
@@ -823,7 +835,7 @@ func (r *ImageRepository) Delete(ctx context.Context, uuid string) error {
 			rollbackErr := tx.Rollback(ctx)
 			if rollbackErr != nil && !errors.Is(rollbackErr, pgx.ErrTxClosed) {
 				// Just log the rollback error as there's not much we can do at this point
-				fmt.Printf("error rolling back transaction: %v\n", rollbackErr)
+				log.Error().Err(err).Msg("Failed to roll back transaction")
 			}
 		}
 	}()
@@ -846,22 +858,22 @@ func (r *ImageRepository) Delete(ctx context.Context, uuid string) error {
 	}
 
 	// Delete from Elasticsearch after successful deletion
-	req := opensearchapi.DeleteRequest{
+	req := esapi.DeleteRequest{
 		Index:      "images",
 		DocumentID: uuid,
 		Refresh:    "true",
 	}
 
-	res, err := req.Do(ctx, r.container.OpenSearch.GetClient())
+	res, err := req.Do(ctx, r.container.Elastic.GetClient())
 	if err != nil {
-		fmt.Printf("error deleting image %s from Elasticsearch: %v\n", uuid, err)
+		log.Error().Err(err).Msgf("Failed to delete image %s from Elasticsearch", uuid)
 		return nil
 	}
 
 	// Handle potential close error
 	defer func() {
 		if closeErr := res.Body.Close(); closeErr != nil {
-			fmt.Printf("error closing Elasticsearch response body: %v\n", closeErr)
+			log.Error().Err(err).Msg("Failed to close Elasticsearch response body")
 		}
 	}()
 
@@ -871,9 +883,9 @@ func (r *ImageRepository) Delete(ctx context.Context, uuid string) error {
 		if res.StatusCode != 404 {
 			var e map[string]interface{}
 			if err := json.NewDecoder(res.Body).Decode(&e); err != nil {
-				fmt.Printf("error parsing the Elasticsearch error response: %v\n", err)
+				log.Error().Err(err).Msg("Failed to parse Elasticsearch error response")
 			} else {
-				fmt.Printf("error deleting document from Elasticsearch [status:%s]: %v\n", res.Status(), e)
+				log.Error().Err(err).Str("status", res.Status()).Msg("Failed to delete document from Elasticsearch index")
 			}
 		}
 		// Don't return an error since the storage deletion was successful
@@ -886,7 +898,7 @@ func (r *ImageRepository) Delete(ctx context.Context, uuid string) error {
 	})
 
 	if err != nil {
-		fmt.Printf("error deleting image %s from Qdrant: %v\n", uuid, err)
+		log.Error().Err(err).Msgf("Failed to delete image %s from Qdrant", uuid)
 		return nil
 	}
 
@@ -908,57 +920,15 @@ func (r *ImageRepository) Search(ctx context.Context, filter models.ImageFilter)
 		return nil, fmt.Errorf("error building search query: %w", err)
 	}
 
-	// Convert to JSON
-	var buf bytes.Buffer
-	encoder := json.NewEncoder(&buf)
-	encoder.SetIndent("", "  ")
-	if err := encoder.Encode(query); err != nil {
-		return nil, fmt.Errorf("error encoding query: %w", err)
-	}
-
-	//fmt.Println(string(buf.Bytes()))
-
 	// Execute the search
-	res, err := r.container.OpenSearch.GetClient().Search(
-		r.container.OpenSearch.GetClient().Search.WithContext(ctx),
-		r.container.OpenSearch.GetClient().Search.WithIndex("images"),
-		r.container.OpenSearch.GetClient().Search.WithBody(&buf),
-		r.container.OpenSearch.GetClient().Search.WithTrackTotalHits(true),
-	)
+	res, err := r.container.Elastic.GetClient().Search().Index("images").Request(query).TrackTotalHits(true).Do(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error executing search: %w", err)
 	}
 
-	// Handle potential close error
-	defer func() {
-		if closeErr := res.Body.Close(); closeErr != nil {
-			fmt.Printf("error closing Elasticsearch response body: %v\n", closeErr)
-		}
-	}()
-
-	// Check for errors
-	if res.IsError() {
-		var e map[string]interface{}
-		if err := json.NewDecoder(res.Body).Decode(&e); err != nil {
-			return nil, fmt.Errorf("error parsing the response body: %w", err)
-		}
-		return nil, fmt.Errorf("error searching documents [status:%s]: %v", res.Status(), e)
-	}
-
-	// Parse the response
-	var osr map[string]interface{}
-	if err := json.NewDecoder(res.Body).Decode(&osr); err != nil {
-		return nil, fmt.Errorf("error parsing the response body: %w", err)
-	}
-
 	// Extract total count
-	totalHits := int(osr["hits"].(map[string]interface{})["total"].(map[string]interface{})["value"].(float64))
-
-	// Get the hits
-	hits, ok := osr["hits"].(map[string]interface{})["hits"].([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("unexpected response format")
-	}
+	totalHits := res.Hits.Total.Value
+	hits := res.Hits.Hits
 
 	// Determine if we have more results by checking if we have one extra hit
 	hasMore := len(hits) > limit
@@ -968,12 +938,8 @@ func (r *ImageRepository) Search(ctx context.Context, filter models.ImageFilter)
 
 	// Convert hits to models
 	images := make([]*models.Image, 0, len(hits))
-	var nextCursor []interface{}
-	for i, hitRaw := range hits {
-		hit, ok := hitRaw.(map[string]interface{})
-		if !ok {
-			return nil, fmt.Errorf("unexpected hit format")
-		}
+	var nextCursor []types.FieldValue
+	for i, hit := range hits {
 		image, err := r.hitToImage(hit)
 		if err != nil {
 			return nil, fmt.Errorf("error converting hit to image: %w", err)
@@ -982,11 +948,7 @@ func (r *ImageRepository) Search(ctx context.Context, filter models.ImageFilter)
 
 		// If this is the last hit and there are more results, use its "sort" field as the cursor.
 		if i == len(hits)-1 && hasMore {
-			if sortValues, found := hit["sort"].([]interface{}); found {
-				nextCursor = sortValues
-			} else {
-				return nil, fmt.Errorf("missing sort field in hit for pagination")
-			}
+			nextCursor = append(nextCursor, hit.Sort...)
 		}
 	}
 
@@ -999,16 +961,13 @@ func (r *ImageRepository) Search(ctx context.Context, filter models.ImageFilter)
 	}, nil
 }
 
-func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.ImageFilter, limit int) (map[string]interface{}, error) {
-	// Initialize the query structure
-	boolQuery := map[string]interface{}{
-		"must":     []interface{}{},
-		"must_not": []interface{}{},
-		"should":   []interface{}{},
-	}
+func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.ImageFilter, limit int) (*search.Request, error) {
+	// Build query clause slices.
+	var filters, notFilters []types.Query
+	var shoulds []types.Query
 
-	// Initialize the functions
-	var functions []interface{}
+	// Functions to use for scoring
+	var scoreFunctions []types.FunctionScore
 
 	// Flag to track if we should return zero results due to no vector matches
 	returnEmptyResults := false
@@ -1045,30 +1004,32 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 			returnEmptyResults = true
 		} else {
 			uuids := make([]string, 0, len(searchResults))
-			scoresByUUID := make(map[string]float32)
+			scoresByUUID := make(map[string]float64)
 
 			for _, result := range searchResults {
 				uuid := result.Id.GetUuid()
 				uuids = append(uuids, uuid)
-				scoresByUUID[uuid] = result.Score
+				scoresByUUID[uuid] = float64(result.Score)
 			}
 
-			// Add a terms query to filter by these UUIDs
-			boolQuery["must"] = append(boolQuery["must"].([]interface{}), map[string]interface{}{
-				"terms": map[string]interface{}{
-					"uuid": uuids,
+			// Create a terms query filtering by these UUIDs.
+			filters = append(filters, types.Query{
+				Terms: &types.TermsQuery{
+					TermsQuery: map[string]types.TermsQueryField{
+						"uuid": uuids,
+					},
 				},
 			})
 
 			// Use a function score to preserve the vector similarity scores
 			for uuid, score := range scoresByUUID {
-				functions = append(functions, map[string]interface{}{
-					"filter": map[string]interface{}{
-						"term": map[string]interface{}{
-							"uuid": uuid,
+				scoreFunctions = append(scoreFunctions, types.FunctionScore{
+					Filter: &types.Query{
+						Term: map[string]types.TermQuery{
+							"uuid": {Value: uuid},
 						},
 					},
-					"weight": score,
+					Weight: utils.NewPointer(types.Float64(score)),
 				})
 			}
 		}
@@ -1083,64 +1044,55 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 	// If we should return empty results, use a filter that will never match
 	if returnEmptyResults {
 		// This is a pattern to intentionally return no results
-		boolQuery["must"] = append(boolQuery["must"].([]interface{}), map[string]interface{}{
-			"term": map[string]interface{}{
-				"uuid": "impossible_uuid_that_will_never_match",
+		filters = append(filters, types.Query{
+			Term: map[string]types.TermQuery{
+				"uuid": {Value: "impossible_uuid_that_will_never_match"},
 			},
 		})
 	}
 
 	// Apply title filter
 	if filter.Title != "" {
-		boolQuery["should"] = append(boolQuery["should"].([]interface{}), map[string]interface{}{
-			"match": map[string]interface{}{
-				"title": filter.Title,
+		shoulds = append(shoulds, types.Query{
+			Match: map[string]types.MatchQuery{
+				"title": {Query: filter.Title, Boost: utils.NewPointer(float32(2.0))},
 			},
 		})
 	}
 
 	// Apply description filter
 	if filter.Description != "" {
-		boolQuery["should"] = append(boolQuery["should"].([]interface{}), map[string]interface{}{
-			"match": map[string]interface{}{
-				"description": filter.Description,
+		shoulds = append(shoulds, types.Query{
+			Match: map[string]types.MatchQuery{
+				"description": {Query: filter.Description},
 			},
 		})
 	}
 
 	// Apply hash filter
 	if filter.Hash != "" {
-		boolQuery["must"] = append(boolQuery["must"].([]interface{}), map[string]interface{}{
-			"bool": map[string]interface{}{
-				"should": []interface{}{
-					map[string]interface{}{
-						"term": map[string]interface{}{
-							"md5": filter.Hash,
-						},
-					},
-					map[string]interface{}{
-						"term": map[string]interface{}{
-							"sha1": filter.Hash,
-						},
-					},
-				},
-				"minimum_should_match": 1,
+		filters = append(filters, types.Query{Bool: &types.BoolQuery{
+			Should: []types.Query{
+				{Term: map[string]types.TermQuery{"md5": {Value: filter.Hash}}},
+				{Term: map[string]types.TermQuery{"sha1": {Value: filter.Hash}}},
 			},
-		})
+			MinimumShouldMatch: 1,
+		}})
 	}
 
 	// Apply width filters
 	if filter.MinWidth > 0 || filter.MaxWidth > 0 {
-		widthRange := map[string]interface{}{}
+		widthRange := types.NumberRangeQuery{}
+
 		if filter.MinWidth > 0 {
-			widthRange["gte"] = filter.MinWidth
+			widthRange.Gte = utils.NewPointer(types.Float64(filter.MinWidth))
 		}
 		if filter.MaxWidth > 0 {
-			widthRange["lte"] = filter.MaxWidth
+			widthRange.Lte = utils.NewPointer(types.Float64(filter.MaxWidth))
 		}
 
-		boolQuery["must"] = append(boolQuery["must"].([]interface{}), map[string]interface{}{
-			"range": map[string]interface{}{
+		filters = append(filters, types.Query{
+			Range: map[string]types.RangeQuery{
 				"width": widthRange,
 			},
 		})
@@ -1148,17 +1100,17 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 
 	// Apply height filters
 	if filter.MinHeight > 0 || filter.MaxHeight > 0 {
-		heightRange := map[string]interface{}{}
+		heightRange := types.NumberRangeQuery{}
 
 		if filter.MinHeight > 0 {
-			heightRange["gte"] = filter.MinHeight
+			heightRange.Gte = utils.NewPointer(types.Float64(filter.MinHeight))
 		}
 		if filter.MaxHeight > 0 {
-			heightRange["lte"] = filter.MaxHeight
+			heightRange.Lte = utils.NewPointer(types.Float64(filter.MaxHeight))
 		}
 
-		boolQuery["must"] = append(boolQuery["must"].([]interface{}), map[string]interface{}{
-			"range": map[string]interface{}{
+		filters = append(filters, types.Query{
+			Range: map[string]types.RangeQuery{
 				"height": heightRange,
 			},
 		})
@@ -1166,17 +1118,17 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 
 	// Apply date filters
 	if filter.SinceDate != nil || filter.BeforeDate != nil {
-		dateRange := map[string]interface{}{}
+		dateRange := types.DateRangeQuery{}
 
 		if filter.SinceDate != nil {
-			dateRange["gte"] = filter.SinceDate.Format(time.RFC3339)
+			dateRange.Gte = utils.NewPointer(filter.SinceDate.Format(time.RFC3339))
 		}
 		if filter.BeforeDate != nil {
-			dateRange["lte"] = filter.BeforeDate.Format(time.RFC3339)
+			dateRange.Lte = utils.NewPointer(filter.BeforeDate.Format(time.RFC3339))
 		}
 
-		boolQuery["must"] = append(boolQuery["must"].([]interface{}), map[string]interface{}{
-			"range": map[string]interface{}{
+		filters = append(filters, types.Query{
+			Range: map[string]types.RangeQuery{
 				"created_at": dateRange,
 			},
 		})
@@ -1185,21 +1137,23 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 	// Apply tag filters
 	if len(filter.TagFilters) > 0 {
 		for _, tagFilter := range filter.TagFilters {
-			tagQuery := map[string]interface{}{
-				"nested": map[string]interface{}{
-					"path": "tags",
-					"query": map[string]interface{}{
-						"term": map[string]interface{}{
-							"tags.uuid": tagFilter.ID,
-						},
+			nestedQuery := &types.NestedQuery{
+				Path: "tags",
+				Query: &types.Query{
+					Term: map[string]types.TermQuery{
+						"tags.uuid": {Value: tagFilter.ID},
 					},
 				},
 			}
 
 			if tagFilter.Include {
-				boolQuery["must"] = append(boolQuery["must"].([]interface{}), tagQuery)
+				filters = append(filters, types.Query{
+					Nested: nestedQuery,
+				})
 			} else {
-				boolQuery["must_not"] = append(boolQuery["must_not"].([]interface{}), tagQuery)
+				notFilters = append(notFilters, types.Query{
+					Nested: nestedQuery,
+				})
 			}
 		}
 	}
@@ -1207,47 +1161,43 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 	// Apply person filters
 	if len(filter.PersonFilters) > 0 {
 		for _, personFilter := range filter.PersonFilters {
-			personQuery := map[string]interface{}{
-				"nested": map[string]interface{}{
-					"path": "people",
-					"query": map[string]interface{}{
-						"bool": map[string]interface{}{
-							"must": []interface{}{
-								map[string]interface{}{
-									"term": map[string]interface{}{
-										"people.uuid": personFilter.ID,
-									},
-								},
-								map[string]interface{}{
-									"term": map[string]interface{}{
-										"people.role": personFilter.Role,
-									},
-								},
-							},
+			nestedQuery := &types.NestedQuery{
+				Path: "people",
+				Query: &types.Query{
+					Bool: &types.BoolQuery{
+						Must: []types.Query{
+							{Term: map[string]types.TermQuery{"people.uuid": {Value: personFilter.ID}}},
+							{Term: map[string]types.TermQuery{"people.role": {Value: personFilter.Role}}},
 						},
 					},
 				},
 			}
 
 			if personFilter.Include {
-				boolQuery["must"] = append(boolQuery["must"].([]interface{}), personQuery)
+				filters = append(filters, types.Query{
+					Nested: nestedQuery,
+				})
 			} else {
-				boolQuery["must_not"] = append(boolQuery["must_not"].([]interface{}), personQuery)
+				notFilters = append(notFilters, types.Query{
+					Nested: nestedQuery,
+				})
 			}
 		}
 	}
 
 	// Apply source filters
 	if len(filter.Sources) > 0 {
-		boolQuery["must"] = append(boolQuery["must"].([]interface{}), map[string]interface{}{
-			"nested": map[string]interface{}{
-				"path": "sources",
-				"query": map[string]interface{}{
-					"bool": map[string]interface{}{
-						"should": []interface{}{
-							map[string]interface{}{
-								"terms": map[string]interface{}{
-									"sources.url": filter.Sources,
+		filters = append(filters, types.Query{
+			Nested: &types.NestedQuery{
+				Path: "sources",
+				Query: &types.Query{
+					Bool: &types.BoolQuery{
+						Should: []types.Query{
+							{
+								Terms: &types.TermsQuery{
+									TermsQuery: map[string]types.TermsQueryField{
+										"sources.url": filter.Sources,
+									},
 								},
 							},
 						},
@@ -1257,17 +1207,32 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 		})
 	}
 
-	// Build the base query
-	query := map[string]interface{}{
-		"size": limit + 1, // Extra document to detect more pages
-	}
-
 	// Apply minimum score
-	minScore := float32(1)
+	minScore := float64(0.5)
 	if filter.SimilarityThreshold > 0 {
 		minScore = filter.SimilarityThreshold
 	}
-	query["min_score"] = minScore
+
+	finalBoolQuery := &types.BoolQuery{
+		Must:    filters,
+		MustNot: notFilters,
+		Should:  shoulds,
+	}
+
+	// Build the base query
+	searchRequest := &search.Request{
+		Size:     utils.NewPointer(limit + 1), // Extra document to detect more pages
+		MinScore: utils.NewPointer(types.Float64(minScore)),
+		Query: &types.Query{
+			FunctionScore: &types.FunctionScoreQuery{
+				Query: &types.Query{
+					Bool: finalBoolQuery,
+				},
+				BoostMode: &functionboostmode.Multiply,
+				Functions: scoreFunctions,
+			},
+		},
+	}
 
 	// Determine sort field & direction with defaults
 	sortField := models.SortByCreatedAt
@@ -1276,17 +1241,28 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 	} else if filter.SimilarToID != "" || filter.SimilarToEmbedding != nil || filter.Title != "" || filter.Description != "" {
 		sortField = models.SortByRelevance
 	}
-	sortDirection := models.SortDirectionDesc
-	if filter.SortDirection != "" {
-		sortDirection = filter.SortDirection
+
+	var sortDirection sortorder.SortOrder
+	switch filter.SortDirection {
+	case models.SortDirectionAsc:
+		sortDirection = sortorder.Asc
+	default:
+		sortDirection = sortorder.Desc
 	}
 
 	if sortField == models.SortByRandom {
 		if filter.RandomSeed != nil {
-			functions = []interface{}{
-				map[string]interface{}{
-					"random_score": map[string]interface{}{
-						"seed": *filter.RandomSeed,
+			searchRequest.Query = &types.Query{
+				FunctionScore: &types.FunctionScoreQuery{
+					Query: &types.Query{
+						Bool: finalBoolQuery,
+					},
+					Functions: []types.FunctionScore{
+						{
+							RandomScore: &types.RandomScoreFunction{
+								Seed: *filter.RandomSeed,
+							},
+						},
 					},
 				},
 			}
@@ -1294,50 +1270,37 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 			return nil, fmt.Errorf("invalid random sorting seed provided")
 		}
 	} else {
-		query["sort"] = []interface{}{
-			map[string]interface{}{
-				string(sortField): map[string]interface{}{
-					"order": sortDirection,
-				},
-			},
-			map[string]interface{}{
-				"id": map[string]interface{}{
-					"order": "asc",
+		searchRequest.Sort = []types.SortCombinations{
+			types.SortOptions{
+				SortOptions: map[string]types.FieldSort{
+					string(sortField): {
+						Order: &sortDirection,
+					},
+					"id": {
+						Order: &sortorder.Asc,
+					},
 				},
 			},
 		}
 	}
 
-	query["query"] = map[string]interface{}{
-		"function_score": map[string]interface{}{
-			"query": map[string]interface{}{
-				"bool": boolQuery,
-			},
-			"boost_mode": "multiply",
-			"functions":  functions,
-		},
-	}
-
 	// If a StartingAfter cursor is provided, attach it
 	if filter.StartingAfter != nil {
-		query["search_after"] = filter.StartingAfter
+		searchRequest.SearchAfter = filter.StartingAfter
 	}
 
-	return query, nil
+	return searchRequest, nil
 }
 
 // hitToImage converts an Elasticsearch hit to an Image model
-func (r *ImageRepository) hitToImage(hit map[string]interface{}) (*models.Image, error) {
-	log.Info().Interface("score", hit["_score"]).Interface("uuid", hit["_id"]).Msg("Parsing OpenSearch hit")
+func (r *ImageRepository) hitToImage(hit types.Hit) (*models.Image, error) {
+	log.Debug().Interface("score", hit.Score_).Interface("uuid", hit.Id_).Msg("Parsing Elasticsearch hit")
 
-	// Ensure _source exists and is valid.
-	sourceRaw, ok := hit["_source"]
-	if !ok {
-		return nil, fmt.Errorf("missing _source field")
-	}
-	source, ok := sourceRaw.(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("_source is not a map")
+	// Parse the source
+	var source map[string]any
+	err := json.Unmarshal(hit.Source_, &source)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing sorce: %w", err)
 	}
 
 	// Inline helper functions for extracting fields.

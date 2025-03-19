@@ -7,13 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/foresturquhart/curator/server/container"
-	"github.com/foresturquhart/curator/server/models"
-	"github.com/foresturquhart/curator/server/repositories"
-	"github.com/foresturquhart/curator/server/utils"
-	"github.com/labstack/echo/v4"
-	"github.com/pgvector/pgvector-go"
-	"github.com/rs/zerolog/log"
 	"image"
 	_ "image/gif"
 	_ "image/jpeg"
@@ -25,6 +18,14 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/foresturquhart/curator/server/container"
+	"github.com/foresturquhart/curator/server/models"
+	"github.com/foresturquhart/curator/server/repositories"
+	"github.com/foresturquhart/curator/server/utils"
+	"github.com/labstack/echo/v4"
+	"github.com/pgvector/pgvector-go"
+	"github.com/rs/zerolog/log"
 )
 
 type ImageHandler struct {
@@ -52,6 +53,25 @@ func RegisterImageRoutes(e *echo.Echo, c *container.Container, repo *repositorie
 	images.PUT("/:id", handler.UpdateImage)
 	images.DELETE("/:id", handler.DeleteImage)
 	images.POST("/search", handler.SearchImages)
+}
+
+// ImageTagRequest represents a tag in API requests
+type ImageTagRequest struct {
+	UUID string `json:"uuid"` // UUID of tag
+	Name string `json:"name"` // Name of tag
+}
+
+// ImagePersonRequest represents a person in API requests
+type ImagePersonRequest struct {
+	ID   string            `json:"id"`   // UUID of person
+	Role models.PersonRole `json:"role"` // Role of the person
+}
+
+// ImageSourceRequest represents a source in API requests
+type ImageSourceRequest struct {
+	URL         string  `json:"url"`         // Source URL
+	Title       *string `json:"title"`       // Optional source title
+	Description *string `json:"description"` // Optional source description
 }
 
 func (h *ImageHandler) CreateImage(c echo.Context) error {
@@ -89,7 +109,6 @@ func (h *ImageHandler) CreateImage(c echo.Context) error {
 
 	// Detect content type from file contents, not extension
 	contentType := http.DetectContentType(buffer)
-	log.Info().Str("contentType", contentType).Msg("Detected content type")
 
 	// Map MIME types to our internal format types
 	var format models.ImageFormat
@@ -157,16 +176,50 @@ func (h *ImageHandler) CreateImage(c echo.Context) error {
 
 	// Parse metadata from form
 	var metadata struct {
-		Title       *string               `json:"title"`
-		Description *string               `json:"description"`
-		Tags        []*models.ImageTag    `json:"tags"`
-		People      []*models.ImagePerson `json:"people"`
-		Sources     []*models.ImageSource `json:"sources"`
+		Title       *string              `json:"title"`
+		Description *string              `json:"description"`
+		Tags        []ImageTagRequest    `json:"tags"`
+		People      []ImagePersonRequest `json:"people"`
+		Sources     []ImageSourceRequest `json:"sources"`
 	}
 
 	if metadataJSON := c.FormValue("metadata"); metadataJSON != "" {
 		if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
 			return echo.NewHTTPError(http.StatusBadRequest, "Invalid metadata JSON: "+err.Error())
+		}
+	}
+
+	// Convert API request tags to model tags
+	var tags []*models.ImageTag
+	for _, tagReq := range metadata.Tags {
+		if tagReq.UUID != "" || tagReq.Name != "" {
+			tags = append(tags, &models.ImageTag{
+				UUID: tagReq.UUID,
+				Name: tagReq.Name,
+			})
+		}
+	}
+
+	// Convert API request people to model people
+	var people []*models.ImagePerson
+	for _, personReq := range metadata.People {
+		if personReq.ID != "" && personReq.Role != "" {
+			people = append(people, &models.ImagePerson{
+				UUID: personReq.ID,
+				Role: personReq.Role,
+			})
+		}
+	}
+
+	// Convert API request sources to model sources
+	var sources []*models.ImageSource
+	for _, sourceReq := range metadata.Sources {
+		if sourceReq.URL != "" {
+			sources = append(sources, &models.ImageSource{
+				URL:         sourceReq.URL,
+				Title:       sourceReq.Title,
+				Description: sourceReq.Description,
+			})
 		}
 	}
 
@@ -185,9 +238,9 @@ func (h *ImageHandler) CreateImage(c echo.Context) error {
 		Embedding:   &imageEmbedding,
 		Title:       metadata.Title,
 		Description: metadata.Description,
-		Tags:        metadata.Tags,
-		People:      metadata.People,
-		Sources:     metadata.Sources,
+		Tags:        tags,
+		People:      people,
+		Sources:     sources,
 	}
 
 	// Store in database
@@ -195,12 +248,10 @@ func (h *ImageHandler) CreateImage(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Error storing image: "+err.Error())
 	}
 
-	filePath := filepath.Join(h.container.Config.FileStoragePath, imageModel.GetStoredName())
-
-	log.Info().Msg(filePath)
+	filePath := filepath.Join(h.container.Config.StoragePath, imageModel.GetStoredName())
 
 	// Ensure directory exists
-	if err := os.MkdirAll(h.container.Config.FileStoragePath, 0755); err != nil {
+	if err := os.MkdirAll(h.container.Config.StoragePath, 0755); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Error creating storage directory: "+err.Error())
 	}
 
@@ -389,14 +440,12 @@ func (h *ImageHandler) UpdateImage(c echo.Context) error {
 
 	// Parse update data
 	var updateData struct {
-		Title       *string               `json:"title"`
-		Description *string               `json:"description"`
-		Tags        []*models.ImageTag    `json:"tags"`
-		People      []*models.ImagePerson `json:"people"`
-		Sources     []*models.ImageSource `json:"sources"`
+		Title       *string              `json:"title"`
+		Description *string              `json:"description"`
+		Tags        []ImageTagRequest    `json:"tags"`
+		People      []ImagePersonRequest `json:"people"`
+		Sources     []ImageSourceRequest `json:"sources"`
 	}
-
-	// TODO: the requests shouldn't use models.ImageTag, models.ImagePerson or models.ImageSource, since we don't want to accept fields like name or added_at and stuff
 
 	if err := c.Bind(&updateData); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "Invalid request data: "+err.Error())
@@ -411,16 +460,47 @@ func (h *ImageHandler) UpdateImage(c echo.Context) error {
 		existingImage.Description = updateData.Description
 	}
 
+	// Convert API request tags to model tags
 	if updateData.Tags != nil {
-		existingImage.Tags = updateData.Tags
+		var tags []*models.ImageTag
+		for _, tagReq := range updateData.Tags {
+			if tagReq.UUID != "" || tagReq.Name != "" {
+				tags = append(tags, &models.ImageTag{
+					UUID: tagReq.UUID,
+					Name: tagReq.Name,
+				})
+			}
+		}
+		existingImage.Tags = tags
 	}
 
+	// Convert API request people to model people
 	if updateData.People != nil {
-		existingImage.People = updateData.People
+		var people []*models.ImagePerson
+		for _, personReq := range updateData.People {
+			if personReq.ID != "" && personReq.Role != "" {
+				people = append(people, &models.ImagePerson{
+					UUID: personReq.ID,
+					Role: personReq.Role,
+				})
+			}
+		}
+		existingImage.People = people
 	}
 
+	// Convert API request sources to model sources
 	if updateData.Sources != nil {
-		existingImage.Sources = updateData.Sources
+		var sources []*models.ImageSource
+		for _, sourceReq := range updateData.Sources {
+			if sourceReq.URL != "" {
+				sources = append(sources, &models.ImageSource{
+					URL:         sourceReq.URL,
+					Title:       sourceReq.Title,
+					Description: sourceReq.Description,
+				})
+			}
+		}
+		existingImage.Sources = sources
 	}
 
 	// Save updates
@@ -445,7 +525,7 @@ func (h *ImageHandler) DeleteImage(c echo.Context) error {
 	}
 
 	// Determine stored file path
-	filePath := filepath.Join(h.container.Config.FileStoragePath, imageModel.GetStoredName())
+	filePath := filepath.Join(h.container.Config.StoragePath, imageModel.GetStoredName())
 
 	// Delete from database (this also handles OpenSearch and Qdrant deletion)
 	if err := h.repository.Delete(ctx, id); err != nil {
@@ -486,7 +566,7 @@ type SearchImagesRequest struct {
 
 	// Vector similarity
 	SimilarToID         *string  `json:"similar_to_id"`
-	SimilarityThreshold *float32 `json:"similarity_threshold"`
+	SimilarityThreshold *float64 `json:"similarity_threshold"`
 
 	// Tag filtering
 	TagFilters []models.ImageTagFilter `json:"tag_filters"`

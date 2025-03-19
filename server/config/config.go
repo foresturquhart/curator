@@ -10,14 +10,16 @@ type Config struct {
 
 	EncryptionKey string `env:"ENCRYPTION_KEY" envDefault:"secret"`
 
-	DatabaseURL    string `env:"DATABASE_URL" envDefault:"postgresql://postgres:postgres@127.0.0.1:5432/postgres"`
-	OpenSearchURL  string `env:"OPENSEARCH_URL" envDefault:"http://127.0.0.1:9200"`
-	ClipServiceURL string `env:"CLIP_SERVICE_URL" envDefault:"127.0.0.1:6200"`
+	DatabaseURL      string `env:"DATABASE_URL" envDefault:"postgresql://postgres:postgres@127.0.0.1:5432/postgres"`
+	ElasticsearchURL string `env:"ELASTICSEARCH_URL" envDefault:"http://127.0.0.1:9200"`
 
 	QdrantHost string `env:"QDRANT_HOST" envDefault:"127.0.0.1"`
 	QdrantPort int    `env:"QDRANT_PORT" envDefault:"6334"`
 
-	FileStoragePath string `env:"FILE_STORAGE_PATH" envDefault:"./images"`
+	ClipHost string `env:"CLIP_HOST" envDefault:"127.0.0.1"`
+	ClipPort int    `env:"CLIP_PORT" envDefault:"50051"`
+
+	StoragePath string `env:"STORAGE_PATH" envDefault:"./images"`
 }
 
 func Load() (*Config, error) {
