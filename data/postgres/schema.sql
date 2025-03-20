@@ -297,6 +297,7 @@ CREATE TABLE tags (
     uuid UUID NOT NULL DEFAULT uuid_generate_v4() UNIQUE, -- Public-facing identifier for API use
     canonical_id INT, -- Optional reference to canonical form of this tag
     name TEXT NOT NULL UNIQUE, -- Tag name (must be unique)
+    description TEXT, -- Optional tag description
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- Record creation timestamp
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- Record last update timestamp
     FOREIGN KEY (canonical_id) REFERENCES tags(id), -- Self-reference to canonical tag
@@ -366,6 +367,7 @@ CREATE TABLE people (
     id SERIAL PRIMARY KEY, -- Internal primary key for relationships
     uuid UUID NOT NULL DEFAULT uuid_generate_v4() UNIQUE, -- Public-facing identifier for API use
     name TEXT NOT NULL, -- Person's name
+    description TEXT, -- Optional person description
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- Record creation timestamp
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP -- Record last update timestamp
 );

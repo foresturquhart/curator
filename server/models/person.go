@@ -4,11 +4,12 @@ import "time"
 
 // Person represents a person entity in the system
 type Person struct {
-	ID        int64     `json:"-"`          // Internal primary key
-	UUID      string    `json:"id"`         // Public-facing identifier
-	Name      string    `json:"name"`       // Person name
-	CreatedAt time.Time `json:"created_at"` // Creation timestamp
-	UpdatedAt time.Time `json:"updated_at"` // Last update timestamp
+	ID          int64     `json:"-"`           // Internal primary key
+	UUID        string    `json:"id"`          // Public-facing identifier
+	Name        string    `json:"name"`        // Person name
+	Description *string   `json:"description"` // Person description
+	CreatedAt   time.Time `json:"created_at"`  // Creation timestamp
+	UpdatedAt   time.Time `json:"updated_at"`  // Last update timestamp
 
 	Sources []*PersonSource `json:"sources"` // Associated sources
 }

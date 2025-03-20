@@ -96,10 +96,11 @@ func (i *Image) GetUUID() string {
 
 // ImageTag represents a tag associated with an image
 type ImageTag struct {
-	ID      int64     `json:"-"`        // Internal primary key
-	UUID    string    `json:"id"`       // Public-facing identifier
-	Name    string    `json:"name"`     // Tag name
-	AddedAt time.Time `json:"added_at"` // Addition timestamp
+	ID          int64     `json:"-"`           // Internal primary key
+	UUID        string    `json:"id"`          // Public-facing identifier
+	Name        string    `json:"name"`        // Tag name
+	Description *string   `json:"description"` // Tag description
+	AddedAt     time.Time `json:"added_at"`    // Addition timestamp
 }
 
 // PersonRole represents the role a person has in relation to an image
@@ -113,11 +114,12 @@ const (
 
 // ImagePerson represents a person associated with an image in a specific role
 type ImagePerson struct {
-	ID      int64      `json:"-"`        // Internal primary key
-	UUID    string     `json:"id"`       // Public-facing identifier
-	Name    string     `json:"name"`     // Person name
-	Role    PersonRole `json:"role"`     // Their role (creator or subject)
-	AddedAt time.Time  `json:"added_at"` // Addition timestamp
+	ID          int64      `json:"-"`           // Internal primary key
+	UUID        string     `json:"id"`          // Public-facing identifier
+	Name        string     `json:"name"`        // Person name
+	Description *string    `json:"description"` // Person description
+	Role        PersonRole `json:"role"`        // Their role (creator or subject)
+	AddedAt     time.Time  `json:"added_at"`    // Addition timestamp
 }
 
 // ImageSource represents a source associated with an image

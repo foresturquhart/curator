@@ -75,6 +75,15 @@
                     "name": {
                         "type": "keyword"
                     },
+                    "description": {
+                        "type": "text",
+                        "fields": {
+                            "keyword": {
+                                "type": "keyword",
+                                "ignore_above": 256
+                            }
+                        }
+                    },
                     "added_at": {
                         "type": "date"
                     }
@@ -93,6 +102,15 @@
                         "type": "keyword"
                     },
                     "name": {
+                        "type": "text",
+                        "fields": {
+                            "keyword": {
+                                "type": "keyword",
+                                "ignore_above": 256
+                            }
+                        }
+                    },
+                    "description": {
                         "type": "text",
                         "fields": {
                             "keyword": {

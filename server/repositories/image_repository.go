@@ -94,12 +94,19 @@ func (r *ImageRepository) reindexElastic(ctx context.Context, image *models.Imag
 	if len(image.Tags) > 0 {
 		tags := make([]map[string]any, len(image.Tags))
 		for i, tag := range image.Tags {
-			tags[i] = map[string]any{
+			tagDoc := map[string]any{
 				"id":       tag.ID,
 				"uuid":     tag.UUID,
 				"name":     tag.Name,
 				"added_at": tag.AddedAt,
 			}
+
+			// Handle nullable field
+			if tag.Description != nil {
+				tagDoc["description"] = *tag.Description
+			}
+
+			tags[i] = tagDoc
 		}
 		document["tags"] = tags
 	}
@@ -108,13 +115,20 @@ func (r *ImageRepository) reindexElastic(ctx context.Context, image *models.Imag
 	if len(image.People) > 0 {
 		people := make([]map[string]any, len(image.People))
 		for i, person := range image.People {
-			people[i] = map[string]any{
+			personDoc := map[string]any{
 				"id":       person.ID,
 				"uuid":     person.UUID,
 				"name":     person.Name,
 				"role":     person.Role,
 				"added_at": person.AddedAt,
 			}
+
+			// Handle nullable field
+			if person.Description != nil {
+				personDoc["description"] = *person.Description
+			}
+
+			people[i] = personDoc
 		}
 		document["people"] = people
 	}
@@ -546,13 +560,13 @@ func (r *ImageRepository) syncTagAssociations(ctx context.Context, tx pgx.Tx, im
 		var findParam any
 
 		if tag.UUID != "" {
-			findQuery = `SELECT id, uuid, name FROM tags WHERE uuid = $1`
+			findQuery = `SELECT id, uuid, name, description FROM tags WHERE uuid = $1`
 			findParam = tag.UUID
 		} else if tag.ID > 0 {
-			findQuery = `SELECT id, uuid, name FROM tags WHERE id = $1`
+			findQuery = `SELECT id, uuid, name, description FROM tags WHERE id = $1`
 			findParam = tag.ID
 		} else if tag.Name != "" {
-			findQuery = `SELECT id, uuid, name FROM tags WHERE LOWER(name) = LOWER($1)`
+			findQuery = `SELECT id, uuid, name, description FROM tags WHERE LOWER(name) = LOWER($1)`
 			findParam = tag.Name
 		} else {
 			// If not ID nor UUID nor name are provided, skip this tag
@@ -562,7 +576,8 @@ func (r *ImageRepository) syncTagAssociations(ctx context.Context, tx pgx.Tx, im
 		// Try to find the existing tag
 		var tagID int64
 		var tagUUID, tagName string
-		err := tx.QueryRow(ctx, findQuery, findParam).Scan(&tagID, &tagUUID, &tagName)
+		var tagDescription *string
+		err := tx.QueryRow(ctx, findQuery, findParam).Scan(&tagID, &tagUUID, &tagName, &tagDescription)
 
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -574,9 +589,10 @@ func (r *ImageRepository) syncTagAssociations(ctx context.Context, tx pgx.Tx, im
 
 		// Create an updated tag object with complete information
 		updatedTag := &models.ImageTag{
-			ID:   tagID,
-			UUID: tagUUID,
-			Name: tagName,
+			ID:          tagID,
+			UUID:        tagUUID,
+			Name:        tagName,
+			Description: tagDescription,
 		}
 
 		// Mark this tag as one to keep
@@ -648,13 +664,13 @@ func (r *ImageRepository) syncPeopleAssociations(ctx context.Context, tx pgx.Tx,
 
 		// Determine if we need to look up by UUID or ID
 		var findQuery string
-		var findParam interface{}
+		var findParam any
 
 		if person.UUID != "" {
-			findQuery = `SELECT id, uuid, name FROM people WHERE uuid = $1`
+			findQuery = `SELECT id, uuid, name, description FROM people WHERE uuid = $1`
 			findParam = person.UUID
 		} else if person.ID > 0 {
-			findQuery = `SELECT id, uuid, name FROM people WHERE id = $1`
+			findQuery = `SELECT id, uuid, name, description FROM people WHERE id = $1`
 			findParam = person.ID
 		} else {
 			// Neither UUID nor ID is provided
@@ -664,7 +680,8 @@ func (r *ImageRepository) syncPeopleAssociations(ctx context.Context, tx pgx.Tx,
 		// Try to find the existing person
 		var personID int64
 		var personUUID, personName string
-		err := tx.QueryRow(ctx, findQuery, findParam).Scan(&personID, &personUUID, &personName)
+		var personDescription *string
+		err := tx.QueryRow(ctx, findQuery, findParam).Scan(&personID, &personUUID, &personName, &personDescription)
 
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
@@ -681,10 +698,11 @@ func (r *ImageRepository) syncPeopleAssociations(ctx context.Context, tx pgx.Tx,
 
 		// Create an updated person object with complete information
 		updatedPerson := &models.ImagePerson{
-			ID:   personID,
-			UUID: personUUID,
-			Name: personName,
-			Role: person.Role,
+			ID:          personID,
+			UUID:        personUUID,
+			Name:        personName,
+			Description: personDescription,
+			Role:        person.Role,
 		}
 
 		// Generate a unique key that includes the role
@@ -881,7 +899,7 @@ func (r *ImageRepository) Delete(ctx context.Context, uuid string) error {
 	if res.IsError() {
 		// Only log the error if it's not a 404 (document not found)
 		if res.StatusCode != 404 {
-			var e map[string]interface{}
+			var e map[string]any
 			if err := json.NewDecoder(res.Body).Decode(&e); err != nil {
 				log.Error().Err(err).Msg("Failed to parse Elasticsearch error response")
 			} else {
@@ -1417,7 +1435,7 @@ func (r *ImageRepository) hitToImage(hit types.Hit) (*models.Image, error) {
 
 	// Process embedding if available.
 	if embRaw, exists := source["embedding"]; exists && embRaw != nil {
-		embArr, ok := embRaw.([]interface{})
+		embArr, ok := embRaw.([]any)
 		if !ok {
 			return nil, fmt.Errorf("embedding is not an array")
 		}
@@ -1439,7 +1457,7 @@ func (r *ImageRepository) hitToImage(hit types.Hit) (*models.Image, error) {
 		if ok {
 			tags := make([]*models.ImageTag, 0, len(tagsArr))
 			for _, rawTag := range tagsArr {
-				tagMap, ok := rawTag.(map[string]interface{})
+				tagMap, ok := rawTag.(map[string]any)
 				if !ok {
 					continue
 				}
@@ -1463,12 +1481,16 @@ func (r *ImageRepository) hitToImage(hit types.Hit) (*models.Image, error) {
 				if !ok {
 					return nil, fmt.Errorf("tag name is not a string")
 				}
-				tags = append(tags, &models.ImageTag{
+				tagSrc := &models.ImageTag{
 					ID:      int64(idFloat),
 					UUID:    tagUUID,
 					Name:    tagName,
 					AddedAt: addedAt,
-				})
+				}
+				if d, ok := tagMap["description"].(string); ok {
+					tagSrc.Description = &d
+				}
+				tags = append(tags, tagSrc)
 			}
 			image.Tags = tags
 		}
@@ -1508,13 +1530,17 @@ func (r *ImageRepository) hitToImage(hit types.Hit) (*models.Image, error) {
 				if !ok {
 					return nil, fmt.Errorf("person role is not a string")
 				}
-				people = append(people, &models.ImagePerson{
+				personSrc := &models.ImagePerson{
 					ID:      int64(idFloat),
 					UUID:    personUUID,
 					Name:    name,
 					Role:    models.PersonRole(role),
 					AddedAt: addedAt,
-				})
+				}
+				if d, ok := personMap["description"].(string); ok {
+					personSrc.Description = &d
+				}
+				people = append(people, personSrc)
 			}
 			image.People = people
 		}
@@ -1586,7 +1612,8 @@ func (r *ImageRepository) fetchImageTags(ctx context.Context, tx pgx.Tx, imageID
 				t.id, 
 				t.uuid,
 				t.canonical_id, 
-				t.name, 
+				t.name,
+				t.description,
 				t.id AS original_tag_id,
 				it.created_at AS added_at,
 				1 AS depth
@@ -1599,6 +1626,7 @@ func (r *ImageRepository) fetchImageTags(ctx context.Context, tx pgx.Tx, imageID
 				t.uuid,
 				t.canonical_id, 
 				t.name, 
+				t.description,
 				cc.original_tag_id,
 				cc.added_at,
 				cc.depth + 1
@@ -1611,11 +1639,12 @@ func (r *ImageRepository) fetchImageTags(ctx context.Context, tx pgx.Tx, imageID
 			COALESCE(leaf.id, cc.id) AS tag_id,
 			COALESCE(leaf.uuid, cc.uuid) AS tag_uuid,
 			COALESCE(leaf.name, cc.name) AS tag_name,
+			COALESCE(leaf.description, cc.description) AS tag_description,
 			cc.added_at
 		FROM canonical_chain cc
 		LEFT JOIN (
 			SELECT DISTINCT ON (original_tag_id) 
-				original_tag_id, id, uuid, name
+				original_tag_id, id, uuid, name, description
 			FROM canonical_chain 
 			WHERE canonical_id IS NULL
 			ORDER BY original_tag_id, depth DESC
@@ -1633,7 +1662,7 @@ func (r *ImageRepository) fetchImageTags(ctx context.Context, tx pgx.Tx, imageID
 	var tags []*models.ImageTag
 	for rows.Next() {
 		var tag models.ImageTag
-		err := rows.Scan(&tag.ID, &tag.UUID, &tag.Name, &tag.AddedAt)
+		err := rows.Scan(&tag.ID, &tag.UUID, &tag.Name, &tag.Description, &tag.AddedAt)
 		if err != nil {
 			return nil, err
 		}
@@ -1655,6 +1684,7 @@ func (r *ImageRepository) fetchImagePeople(ctx context.Context, tx pgx.Tx, image
 			p.id,
 			p.uuid,
 			p.name,
+			p.description,
 			ip.role,
 			ip.created_at AS added_at
 		FROM image_people ip
@@ -1672,7 +1702,7 @@ func (r *ImageRepository) fetchImagePeople(ctx context.Context, tx pgx.Tx, image
 	var people []*models.ImagePerson
 	for rows.Next() {
 		var person models.ImagePerson
-		err := rows.Scan(&person.ID, &person.UUID, &person.Name, &person.Role, &person.AddedAt)
+		err := rows.Scan(&person.ID, &person.UUID, &person.Name, &person.Description, &person.Role, &person.AddedAt)
 		if err != nil {
 			return nil, err
 		}
