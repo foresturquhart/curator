@@ -1,0 +1,11 @@
+DROP TRIGGER IF EXISTS reorder_collection_items_trigger ON image_collections;
+DROP FUNCTION IF EXISTS move_collection_item();
+DROP FUNCTION IF EXISTS reorder_collection_items();
+DROP FUNCTION IF EXISTS get_next_position(INT);
+DROP TRIGGER IF EXISTS trg_update_collections_from_image_collections ON image_collections;
+DROP INDEX IF EXISTS idx_image_collections_collection_position;
+DROP INDEX IF EXISTS idx_image_collections_image_id;
+DROP TABLE IF EXISTS image_collections;
+DROP FUNCTION IF EXISTS update_collections_from_link();
+DROP TRIGGER IF EXISTS update_collections_updated_at ON collections;
+DROP TABLE IF EXISTS collections;

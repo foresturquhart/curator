@@ -37,28 +37,16 @@ func main() {
 	}
 	defer c.Close()
 
+	// Perform migrations
+	if err := c.Migrate(context.Background()); err != nil {
+		log.Fatal().Err(err).Msg("Failed to perform migrations")
+	}
+
 	// Initialize repositories
 	imageRepository := repositories.NewImageRepository(c)
 	personRepository := repositories.NewPersonRepository(c)
 	// tagRepository := repositories.NewTagRepository(c)
 	// collectionRepository := repositories.NewCollectionRepository(c)
-
-	// Initialize indexes
-	if err := imageRepository.InitializeQdrantCollection(context.Background()); err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize images vector collection")
-	}
-	if err := imageRepository.InitializeElasticIndex(context.Background()); err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize images search index")
-	}
-	if err := personRepository.InitializeElasticIndex(context.Background()); err != nil {
-		log.Fatal().Err(err).Msg("Failed to initialize people search index")
-	}
-	// if err := tagRepository.InitializeElasticIndex(context.Background()); err != nil {
-	// 	log.Fatal().Err(err).Msg("Failed to initialize tags search index")
-	// }
-	// if err := collectionRepository.InitializeElasticIndex(context.Background()); err != nil {
-	// 	log.Fatal().Err(err).Msg("Failed to initialize collections search index")
-	// }
 
 	if err := imageRepository.ReindexAll(context.Background()); err != nil {
 		log.Fatal().Err(err).Msg("Failed to reindex images")

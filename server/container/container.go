@@ -1,37 +1,46 @@
 package container
 
 import (
+	"context"
 	"fmt"
 
+	"github.com/elastic/go-elasticsearch/v8"
 	"github.com/foresturquhart/curator/server/clip"
 	"github.com/foresturquhart/curator/server/config"
-	"github.com/foresturquhart/curator/server/storage"
-	"github.com/foresturquhart/curator/server/storage/elastic"
+	"github.com/foresturquhart/curator/server/database"
+	"github.com/foresturquhart/curator/server/elastic"
+	"github.com/foresturquhart/curator/server/vector"
+	"github.com/qdrant/go-client/qdrant"
 )
 
 type Container struct {
 	Config   *config.Config
-	Database *storage.Database
+	Database *database.Database
 	Elastic  *elastic.Elastic
-	Qdrant   *storage.Qdrant
+	Qdrant   *vector.Qdrant
 	Clip     *clip.Client
 }
 
 func NewContainer(cfg *config.Config) (*Container, error) {
 	// Initialize database client
-	databaseClient, err := storage.NewDatabase(cfg.DatabaseURL)
+	databaseClient, err := database.NewDatabase(cfg.DatabaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize database: %w", err)
 	}
 
 	// Initialize elastic client
-	elasticClient, err := elastic.NewElastic(cfg.ElasticsearchURL)
+	elasticClient, err := elastic.NewElastic(elasticsearch.Config{
+		Addresses: []string{cfg.ElasticsearchURL},
+	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize elastic: %w", err)
+		return nil, fmt.Errorf("failed to initialize elasticsearch: %w", err)
 	}
 
 	// Initialize qdrant client
-	qdrantClient, err := storage.NewQdrant(cfg.QdrantHost, cfg.QdrantPort)
+	qdrantClient, err := vector.NewQdrant(&qdrant.Config{
+		Host: cfg.QdrantHost,
+		Port: cfg.QdrantPort,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize qdrant: %w", err)
 	}
@@ -64,4 +73,20 @@ func (c *Container) Close() {
 	if c.Database != nil {
 		c.Database.Close()
 	}
+}
+
+func (c *Container) Migrate(ctx context.Context) error {
+	if err := c.Database.Migrate(); err != nil {
+		return fmt.Errorf("failed to migrate database: %w", err)
+	}
+
+	if err := c.Elastic.Migrate(ctx); err != nil {
+		return fmt.Errorf("failed to migrate elasticsearch: %w", err)
+	}
+
+	if err := c.Qdrant.Migrate(ctx); err != nil {
+		return fmt.Errorf("failed to migrate qdrant: %w", err)
+	}
+
+	return nil
 }

@@ -10,7 +10,7 @@ type Config struct {
 
 	EncryptionKey string `env:"ENCRYPTION_KEY" envDefault:"secret"`
 
-	DatabaseURL      string `env:"DATABASE_URL" envDefault:"postgresql://postgres:postgres@127.0.0.1:5432/postgres"`
+	DatabaseURL      string `env:"DATABASE_URL" envDefault:"postgresql://curator:curator@127.0.0.1:5432/curator"`
 	ElasticsearchURL string `env:"ELASTICSEARCH_URL" envDefault:"http://127.0.0.1:9200"`
 
 	QdrantHost string `env:"QDRANT_HOST" envDefault:"127.0.0.1"`

@@ -32,37 +32,6 @@ func NewImageRepository(container *container.Container) *ImageRepository {
 	}
 }
 
-func (r *ImageRepository) InitializeElasticIndex(ctx context.Context) error {
-	if err := r.container.Elastic.EnsureIndex(ctx, "images"); err != nil {
-		return fmt.Errorf("error ensuring index: %w", err)
-	}
-
-	return nil
-}
-
-func (r *ImageRepository) InitializeQdrantCollection(ctx context.Context) error {
-	exists, err := r.container.Qdrant.GetClient().CollectionExists(ctx, "images")
-	if err != nil {
-		return fmt.Errorf("error checking for images collection: %w", err)
-	}
-
-	if !exists {
-		err := r.container.Qdrant.GetClient().CreateCollection(context.Background(), &qdrant.CreateCollection{
-			CollectionName: "images",
-			VectorsConfig: qdrant.NewVectorsConfig(&qdrant.VectorParams{
-				Size:     512,
-				Distance: qdrant.Distance_Cosine,
-			}),
-		})
-
-		if err != nil {
-			return fmt.Errorf("error initialising images collection: %w", err)
-		}
-	}
-
-	return nil
-}
-
 func (r *ImageRepository) reindexElastic(ctx context.Context, image *models.Image) error {
 	// Construct the document to index
 	document := map[string]any{
@@ -171,7 +140,7 @@ func (r *ImageRepository) reindexElastic(ctx context.Context, image *models.Imag
 	}
 
 	// Execute the request
-	res, err := req.Do(ctx, r.container.Elastic.GetClient())
+	res, err := req.Do(ctx, r.container.Elastic.Client)
 	if err != nil {
 		return fmt.Errorf("error executing index request: %w", err)
 	}
@@ -196,7 +165,7 @@ func (r *ImageRepository) reindexElastic(ctx context.Context, image *models.Imag
 }
 
 func (r *ImageRepository) reindexQdrant(ctx context.Context, image *models.Image) error {
-	_, err := r.container.Qdrant.GetClient().Upsert(ctx, &qdrant.UpsertPoints{
+	_, err := r.container.Qdrant.Client.Upsert(ctx, &qdrant.UpsertPoints{
 		CollectionName: "images",
 		Points: []*qdrant.PointStruct{
 			{
@@ -226,7 +195,7 @@ func (r *ImageRepository) Reindex(ctx context.Context, image *models.Image) erro
 }
 
 func (r *ImageRepository) ReindexAll(ctx context.Context) error {
-	tx, err := r.container.Database.GetPool().Begin(ctx)
+	tx, err := r.container.Database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -314,7 +283,7 @@ func (r *ImageRepository) getByIDTx(ctx context.Context, tx pgx.Tx, id int64) (*
 }
 
 func (r *ImageRepository) GetByID(ctx context.Context, id int64) (*models.Image, error) {
-	tx, err := r.container.Database.GetPool().Begin(ctx)
+	tx, err := r.container.Database.Pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -380,7 +349,7 @@ func (r *ImageRepository) getByUUIDTx(ctx context.Context, tx pgx.Tx, uuid strin
 }
 
 func (r *ImageRepository) GetByUUID(ctx context.Context, uuid string) (*models.Image, error) {
-	tx, err := r.container.Database.GetPool().Begin(ctx)
+	tx, err := r.container.Database.Pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -411,7 +380,7 @@ func (r *ImageRepository) GetByUUID(ctx context.Context, uuid string) (*models.I
 
 func (r *ImageRepository) Upsert(ctx context.Context, image *models.Image) error {
 	// Start a transaction
-	tx, err := r.container.Database.GetPool().Begin(ctx)
+	tx, err := r.container.Database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -842,7 +811,7 @@ func (r *ImageRepository) syncSourceAssociations(ctx context.Context, tx pgx.Tx,
 
 func (r *ImageRepository) Delete(ctx context.Context, uuid string) error {
 	// Start a transaction
-	tx, err := r.container.Database.GetPool().Begin(ctx)
+	tx, err := r.container.Database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -882,7 +851,7 @@ func (r *ImageRepository) Delete(ctx context.Context, uuid string) error {
 		Refresh:    "true",
 	}
 
-	res, err := req.Do(ctx, r.container.Elastic.GetClient())
+	res, err := req.Do(ctx, r.container.Elastic.Client)
 	if err != nil {
 		log.Error().Err(err).Msgf("Failed to delete image %s from Elasticsearch", uuid)
 		return nil
@@ -910,7 +879,7 @@ func (r *ImageRepository) Delete(ctx context.Context, uuid string) error {
 	}
 
 	// Delete from Qdrant after successful deletion
-	_, err = r.container.Qdrant.GetClient().Delete(ctx, &qdrant.DeletePoints{
+	_, err = r.container.Qdrant.Client.Delete(ctx, &qdrant.DeletePoints{
 		CollectionName: "images",
 		Points:         qdrant.NewPointsSelector(qdrant.NewIDUUID(uuid)),
 	})
@@ -939,7 +908,7 @@ func (r *ImageRepository) Search(ctx context.Context, filter models.ImageFilter)
 	}
 
 	// Execute the search
-	res, err := r.container.Elastic.GetClient().Search().Index("images").Request(query).TrackTotalHits(true).Do(ctx)
+	res, err := r.container.Elastic.Client.Search().Index("images").Request(query).TrackTotalHits(true).Do(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error executing search: %w", err)
 	}
@@ -1006,7 +975,7 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 		}
 
 		// Query Qdrant for similar vectors
-		searchResults, err := r.container.Qdrant.GetClient().Query(context.Background(), &qdrant.QueryPoints{
+		searchResults, err := r.container.Qdrant.Client.Query(context.Background(), &qdrant.QueryPoints{
 			CollectionName: "images",
 			Query:          qdrant.NewQuery(vectorToSearch...),
 			WithPayload:    qdrant.NewWithPayloadEnable(false),

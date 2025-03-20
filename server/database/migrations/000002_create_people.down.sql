@@ -1,0 +1,10 @@
+DROP TRIGGER IF EXISTS trg_update_people_from_person_sources ON person_sources;
+DROP TRIGGER IF EXISTS update_person_sources_updated_at ON person_sources;
+DROP TABLE IF EXISTS person_sources;
+DROP TRIGGER IF EXISTS trg_update_images_from_image_people ON image_people;
+DROP INDEX IF EXISTS idx_image_people_person_id;
+DROP TABLE IF EXISTS image_people;
+DROP TYPE IF EXISTS image_role;
+DROP TRIGGER IF EXISTS update_people_updated_at ON people;
+DROP TABLE IF EXISTS people;
+DROP FUNCTION IF EXISTS update_people_from_link();

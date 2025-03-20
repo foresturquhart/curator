@@ -30,14 +30,6 @@ func NewPersonRepository(container *container.Container) *PersonRepository {
 	}
 }
 
-func (r *PersonRepository) InitializeElasticIndex(ctx context.Context) error {
-	if err := r.container.Elastic.EnsureIndex(ctx, "people"); err != nil {
-		return fmt.Errorf("error ensuring index: %w", err)
-	}
-
-	return nil
-}
-
 func (r *PersonRepository) reindexElastic(ctx context.Context, person *models.Person) error {
 	// Construct the document to index
 	document := map[string]any{
@@ -91,7 +83,7 @@ func (r *PersonRepository) reindexElastic(ctx context.Context, person *models.Pe
 	}
 
 	// Execute the request
-	res, err := req.Do(ctx, r.container.Elastic.GetClient())
+	res, err := req.Do(ctx, r.container.Elastic.Client)
 	if err != nil {
 		return fmt.Errorf("error executing index request: %w", err)
 	}
@@ -124,7 +116,7 @@ func (r *PersonRepository) Reindex(ctx context.Context, person *models.Person) e
 }
 
 func (r *PersonRepository) ReindexAll(ctx context.Context) error {
-	tx, err := r.container.Database.GetPool().Begin(ctx)
+	tx, err := r.container.Database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -208,7 +200,7 @@ func (r *PersonRepository) getByIDTx(ctx context.Context, tx pgx.Tx, id int64) (
 }
 
 func (r *PersonRepository) GetByID(ctx context.Context, id int64) (*models.Person, error) {
-	tx, err := r.container.Database.GetPool().Begin(ctx)
+	tx, err := r.container.Database.Pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -270,7 +262,7 @@ func (r *PersonRepository) getByUUIDTx(ctx context.Context, tx pgx.Tx, uuid stri
 }
 
 func (r *PersonRepository) GetByUUID(ctx context.Context, uuid string) (*models.Person, error) {
-	tx, err := r.container.Database.GetPool().Begin(ctx)
+	tx, err := r.container.Database.Pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -310,7 +302,7 @@ func (r *PersonRepository) GetByName(ctx context.Context, name string) (*models.
 	var person models.Person
 	var descriptionPtr *string
 
-	err := r.container.Database.GetPool().QueryRow(ctx, query, name).Scan(
+	err := r.container.Database.Pool.QueryRow(ctx, query, name).Scan(
 		&person.ID, &person.UUID, &person.Name, &descriptionPtr, &person.CreatedAt, &person.UpdatedAt,
 	)
 
@@ -344,7 +336,7 @@ func (r *PersonRepository) Upsert(ctx context.Context, person *models.Person) er
 	}
 
 	// Start a transaction
-	tx, err := r.container.Database.GetPool().Begin(ctx)
+	tx, err := r.container.Database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -559,7 +551,7 @@ func (r *PersonRepository) syncSourceAssociations(ctx context.Context, tx pgx.Tx
 
 func (r *PersonRepository) Delete(ctx context.Context, uuid string) error {
 	// Start a transaction
-	tx, err := r.container.Database.GetPool().Begin(ctx)
+	tx, err := r.container.Database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -599,7 +591,7 @@ func (r *PersonRepository) Delete(ctx context.Context, uuid string) error {
 		Refresh:    "true",
 	}
 
-	res, err := req.Do(ctx, r.container.Elastic.GetClient())
+	res, err := req.Do(ctx, r.container.Elastic.Client)
 	if err != nil {
 		log.Error().Err(err).Msgf("Failed to delete person %s from Elasticsearch", uuid)
 		return nil
@@ -645,7 +637,7 @@ func (r *PersonRepository) Search(ctx context.Context, filter models.PersonFilte
 	}
 
 	// Execute the search
-	res, err := r.container.Elastic.GetClient().Search().Index("people").Request(query).TrackTotalHits(true).Do(ctx)
+	res, err := r.container.Elastic.Client.Search().Index("people").Request(query).TrackTotalHits(true).Do(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error executing search: %w", err)
 	}
