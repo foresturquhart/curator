@@ -1087,6 +1087,37 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 		})
 	}
 
+	// Apply source filter
+	if filter.Source != "" {
+		shoulds = append(shoulds, types.Query{
+			Nested: &types.NestedQuery{
+				Path: "sources",
+				Query: &types.Query{
+					Bool: &types.BoolQuery{
+						Should: []types.Query{
+							{
+								Term: map[string]types.TermQuery{
+									"sources.url.keyword": {
+										Value: filter.Source,
+										Boost: utils.NewPointer(float32(2.0)), // Higher boost for exact matches
+									},
+								},
+							},
+							{
+								Match: map[string]types.MatchQuery{
+									"sources.url": {
+										Query: filter.Source,
+										Boost: utils.NewPointer(float32(1.5)), // Lower boost for partial matches
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		})
+	}
+
 	// Apply hash filter
 	if filter.Hash != "" {
 		filters = append(filters, types.Query{Bool: &types.BoolQuery{
@@ -1201,28 +1232,6 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 				})
 			}
 		}
-	}
-
-	// Apply source filters
-	if len(filter.Sources) > 0 {
-		filters = append(filters, types.Query{
-			Nested: &types.NestedQuery{
-				Path: "sources",
-				Query: &types.Query{
-					Bool: &types.BoolQuery{
-						Should: []types.Query{
-							{
-								Terms: &types.TermsQuery{
-									TermsQuery: map[string]types.TermsQueryField{
-										"sources.url": filter.Sources,
-									},
-								},
-							},
-						},
-					},
-				},
-			},
-		})
 	}
 
 	// Apply minimum score

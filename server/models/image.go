@@ -147,6 +147,7 @@ type ImageFilter struct {
 	// Filtering fields
 	Title              string              // Search by title
 	Description        string              // Search by description
+	Source             string              // Search by source
 	Hash               string              // Search by MD5 or SHA1 hash
 	MinWidth           int                 // Minimum width in pixels
 	MaxWidth           int                 // Maximum width in pixels
@@ -158,7 +159,6 @@ type ImageFilter struct {
 	SimilarToEmbedding *pgvector.Vector    // Find images similar to this embedding vector
 	TagFilters         []ImageTagFilter    // Tags to include or exclude
 	PersonFilters      []ImagePersonFilter // People to include or exclude
-	Sources            []string            // Filter for images with any of these source URLs
 
 	// Similarity threshold field
 	SimilarityThreshold float64

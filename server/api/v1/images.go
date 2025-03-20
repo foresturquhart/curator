@@ -550,32 +550,30 @@ type SearchImagesRequest struct {
 	// Full text search
 	Title       *string `query:"title"`
 	Description *string `query:"description"`
+	Source      *string `query:"source"`
 
 	// Basic filtering
 	Hash *string `query:"hash"`
 
 	// Dimension filtering
-	MinWidth  *int `json:"min_width"`
-	MaxWidth  *int `json:"max_width"`
-	MinHeight *int `json:"min_height"`
-	MaxHeight *int `json:"max_height"`
+	MinWidth  *int `query:"min_width"`
+	MaxWidth  *int `query:"max_width"`
+	MinHeight *int `query:"min_height"`
+	MaxHeight *int `query:"max_height"`
 
 	// Date filtering
-	SinceDate  *string `json:"since_date"`
-	BeforeDate *string `json:"before_date"`
+	SinceDate  *string `query:"since_date"`
+	BeforeDate *string `query:"before_date"`
 
 	// Vector similarity
-	SimilarToID         *string  `json:"similar_to_id"`
-	SimilarityThreshold *float64 `json:"similarity_threshold"`
+	SimilarToID         *string  `query:"similar_to_id"`
+	SimilarityThreshold *float64 `query:"similarity_threshold"`
 
 	// Tag filtering
-	TagFilters []models.ImageTagFilter `json:"tag_filters"`
+	TagFilters []models.ImageTagFilter `query:"tag_filters"`
 
 	// Person filtering
-	PersonFilters []models.ImagePersonFilter `json:"person_filters"`
-
-	// Source filtering
-	Sources []string `json:"sources"`
+	PersonFilters []models.ImagePersonFilter `query:"person_filters"`
 
 	// Sorting & pagination
 	Limit         *int    `query:"limit"`
@@ -632,6 +630,10 @@ func (h *ImageHandler) SearchImages(c echo.Context) error {
 		filter.Description = *req.Description
 	}
 
+	if req.Source != nil {
+		filter.Source = *req.Source
+	}
+
 	if req.Hash != nil {
 		filter.Hash = *req.Hash
 	}
@@ -685,11 +687,6 @@ func (h *ImageHandler) SearchImages(c echo.Context) error {
 	// Apply person filters
 	if len(req.PersonFilters) > 0 {
 		filter.PersonFilters = req.PersonFilters
-	}
-
-	// Apply source filters
-	if len(req.Sources) > 0 {
-		filter.Sources = req.Sources
 	}
 
 	// Apply similarity threshold
