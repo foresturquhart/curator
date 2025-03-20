@@ -526,7 +526,7 @@ func (h *ImageHandler) DeleteImage(c echo.Context) error {
 	// Determine stored file path
 	filePath := filepath.Join(h.container.Config.StoragePath, imageModel.GetStoredName())
 
-	// Delete from database (this also handles OpenSearch and Qdrant deletion)
+	// Delete from database (this also handles Elasticsearch and Qdrant deletion)
 	if err := h.repository.Delete(ctx, id); err != nil {
 		if errors.Is(err, utils.ErrImageNotFound) {
 			return echo.NewHTTPError(http.StatusNotFound, "Image not found")

@@ -21,7 +21,7 @@ type Elastic struct {
 
 // NewElastic creates and configures a new ElasticSearch client
 func NewElastic(connString string) (*Elastic, error) {
-	// Configure OpenSearch client
+	// Configure Elasticsearch client
 	config := elasticsearch.Config{
 		Addresses: []string{connString},
 	}
