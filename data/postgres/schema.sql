@@ -366,7 +366,7 @@ EXECUTE FUNCTION update_images_from_link();
 CREATE TABLE people (
     id SERIAL PRIMARY KEY, -- Internal primary key for relationships
     uuid UUID NOT NULL DEFAULT uuid_generate_v4() UNIQUE, -- Public-facing identifier for API use
-    name TEXT NOT NULL, -- Person's name
+    name TEXT NOT NULL UNIQUE, -- Person's name
     description TEXT, -- Optional person description
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP, -- Record creation timestamp
     updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP -- Record last update timestamp

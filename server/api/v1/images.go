@@ -294,7 +294,7 @@ func calculateFileHashes(file multipart.File) (string, string, error) {
 }
 
 // applyPaginationAndSorting applies common pagination and sorting parameters to an image filter
-func applyPaginationAndSorting(filter *models.ImageFilter, limit *int, startingAfter *string, sortBy *string, sortDirection *string, randomSeed *string, encryptionKey string) error {
+func applyImagesPaginationAndSorting(filter *models.ImageFilter, limit *int, startingAfter *string, sortBy *string, sortDirection *string, randomSeed *string, encryptionKey string) error {
 	// Apply limit
 	if limit != nil {
 		filter.Limit = *limit
@@ -386,9 +386,8 @@ func (h *ImageHandler) ListImages(c echo.Context) error {
 	filter := models.ImageFilter{}
 
 	// Apply pagination and sorting
-	err := applyPaginationAndSorting(&filter, req.Limit, req.StartingAfter,
-		req.SortBy, req.SortDirection, req.RandomSeed,
-		h.container.Config.EncryptionKey)
+	err := applyImagesPaginationAndSorting(&filter, req.Limit, req.StartingAfter,
+		req.SortBy, req.SortDirection, req.RandomSeed, h.container.Config.EncryptionKey)
 
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
@@ -613,9 +612,8 @@ func (h *ImageHandler) SearchImages(c echo.Context) error {
 	filter := models.ImageFilter{}
 
 	// Apply pagination and sorting
-	err := applyPaginationAndSorting(&filter, req.Limit, req.StartingAfter,
-		req.SortBy, req.SortDirection, req.RandomSeed,
-		h.container.Config.EncryptionKey)
+	err := applyImagesPaginationAndSorting(&filter, req.Limit, req.StartingAfter,
+		req.SortBy, req.SortDirection, req.RandomSeed, h.container.Config.EncryptionKey)
 
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())

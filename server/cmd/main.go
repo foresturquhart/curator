@@ -39,8 +39,9 @@ func main() {
 
 	// Initialize repositories
 	imageRepository := repositories.NewImageRepository(c)
-	// personRepository := repositories.NewPersonRepository(c)
+	personRepository := repositories.NewPersonRepository(c)
 	// tagRepository := repositories.NewTagRepository(c)
+	// collectionRepository := repositories.NewCollectionRepository(c)
 
 	// Initialize indexes
 	if err := imageRepository.InitializeQdrantCollection(context.Background()); err != nil {
@@ -49,23 +50,27 @@ func main() {
 	if err := imageRepository.InitializeElasticIndex(context.Background()); err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize images search index")
 	}
-	// if err := personRepository.InitializeElasticIndex(context.Background()); err != nil {
-	// 	log.Fatal().Err(err).Msg("Failed to initialize people search index")
-	// }
+	if err := personRepository.InitializeElasticIndex(context.Background()); err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize people search index")
+	}
 	// if err := tagRepository.InitializeElasticIndex(context.Background()); err != nil {
-	// 	log.Fatal().Err(err).Msg("Failed to initialize tag search index")
+	// 	log.Fatal().Err(err).Msg("Failed to initialize tags search index")
 	// }
-
-	// DEVELOPMENT ONLY: Reindex to ensure changes are up to date
+	// if err := collectionRepository.InitializeElasticIndex(context.Background()); err != nil {
+	// 	log.Fatal().Err(err).Msg("Failed to initialize collections search index")
+	// }
 
 	if err := imageRepository.ReindexAll(context.Background()); err != nil {
 		log.Fatal().Err(err).Msg("Failed to reindex images")
 	}
-	// if err := personRepository.ReindexAll(context.Background()); err != nil {
-	// 	log.Fatal().Err(err).Msg("Failed to reindex people")
-	// }
+	if err := personRepository.ReindexAll(context.Background()); err != nil {
+		log.Fatal().Err(err).Msg("Failed to reindex people")
+	}
 	// if err := tagRepository.ReindexAll(context.Background()); err != nil {
 	// 	log.Fatal().Err(err).Msg("Failed to reindex tags")
+	// }
+	// if err := collectionRepository.ReindexAll(context.Background()); err != nil {
+	// 	log.Fatal().Err(err).Msg("Failed to reindex collections")
 	// }
 
 	// Set up Echo server
@@ -75,8 +80,9 @@ func main() {
 
 	// Register API routes
 	v1.RegisterImageRoutes(e, c, imageRepository)
-	// v1.RegisterPersonRoutes(e, c, personRepository)
+	v1.RegisterPersonRoutes(e, c, personRepository)
 	// v1.RegisterTagRoutes(e, c, tagRepository)
+	// v1.RegisterCollectionRoutes(e, c, collectionRepository)
 
 	// Start the server
 	go func() {
