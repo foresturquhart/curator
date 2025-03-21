@@ -55,6 +55,20 @@ services:
       retries: 120
       start_period: 10s
 
+  redis:
+    image: redis:7.4.2-alpine-3.21
+    container_name: redis
+    volumes:
+      - redis_data:/data:rw
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 5s
+      retries: 120
+      start_period: 10s
+
   clip:
     build:
       context: ./clip
@@ -77,3 +91,4 @@ volumes:
   elastic_data:
   postgres_data:
   qdrant_data:
+  redis_data:
