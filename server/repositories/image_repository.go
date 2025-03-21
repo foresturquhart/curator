@@ -1582,53 +1582,32 @@ func (r *ImageRepository) fetchImageAssociations(ctx context.Context, tx pgx.Tx,
 	return nil
 }
 
-// fetchImageTags retrieves all tags associated with an image, including canonical relationships
+// fetchImageTags retrieves all tags associated with an image
 func (r *ImageRepository) fetchImageTags(ctx context.Context, tx pgx.Tx, imageID int64) ([]*models.ImageTag, error) {
 	query := `
-		WITH RECURSIVE canonical_chain AS (
+		WITH RECURSIVE tag_tree AS (
 			SELECT 
 				t.id, 
-				t.uuid,
-				t.canonical_id, 
-				t.name,
-				t.description,
-				t.id AS original_tag_id,
-				it.created_at AS added_at,
-				1 AS depth
-			FROM image_tags it
-			JOIN tags t ON it.tag_id = t.id
-			WHERE it.image_id = $1 
-			UNION ALL
-			SELECT 
-				t.id, 
-				t.uuid,
-				t.canonical_id, 
+				t.uuid, 
 				t.name, 
-				t.description,
-				cc.original_tag_id,
-				cc.added_at,
-				cc.depth + 1
-			FROM canonical_chain cc
-			JOIN tags t ON cc.canonical_id = t.id
-			WHERE cc.canonical_id IS NOT NULL
-			AND cc.depth < 16
+				t.description, 
+				it.created_at AS added_at
+			FROM image_tags it
+			JOIN tags t ON t.id = it.tag_id
+			WHERE it.image_id = $1
+			UNION
+			SELECT 
+				parent_t.id, 
+				parent_t.uuid, 
+				parent_t.name, 
+				parent_t.description, 
+				tag_tree.added_at
+			FROM tag_tree
+			JOIN tag_closure tc ON tc.descendant = tag_tree.id
+			JOIN tags parent_t ON parent_t.id = tc.ancestor
 		)
-		SELECT 
-			COALESCE(leaf.id, cc.id) AS tag_id,
-			COALESCE(leaf.uuid, cc.uuid) AS tag_uuid,
-			COALESCE(leaf.name, cc.name) AS tag_name,
-			COALESCE(leaf.description, cc.description) AS tag_description,
-			cc.added_at
-		FROM canonical_chain cc
-		LEFT JOIN (
-			SELECT DISTINCT ON (original_tag_id) 
-				original_tag_id, id, uuid, name, description
-			FROM canonical_chain 
-			WHERE canonical_id IS NULL
-			ORDER BY original_tag_id, depth DESC
-		) leaf ON cc.original_tag_id = leaf.original_tag_id
-		WHERE cc.depth = 1
-		ORDER BY tag_name;
+		SELECT DISTINCT id, uuid, name, description, added_at
+		FROM tag_tree;
 	`
 
 	rows, err := tx.Query(ctx, query, imageID)
@@ -1655,7 +1634,7 @@ func (r *ImageRepository) fetchImageTags(ctx context.Context, tx pgx.Tx, imageID
 	return tags, nil
 }
 
-// fetchImagePeople retrieves all people associated with an image, including canonical relationships
+// fetchImagePeople retrieves all people associated with an image
 func (r *ImageRepository) fetchImagePeople(ctx context.Context, tx pgx.Tx, imageID int64) ([]*models.ImagePerson, error) {
 	query := `
 		SELECT 

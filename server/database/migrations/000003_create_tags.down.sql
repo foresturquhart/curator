@@ -3,8 +3,5 @@ DROP TABLE IF EXISTS image_tags;
 DROP INDEX IF EXISTS idx_tag_closure_descendant;
 DROP INDEX IF EXISTS idx_tag_closure_ancestor;
 DROP TABLE IF EXISTS tag_closure;
-DROP INDEX IF EXISTS idx_tags_canonical_id;
 DROP TRIGGER IF EXISTS update_tags_updated_at ON tags;
-DROP TRIGGER IF EXISTS prevent_circular_tag_references_trigger ON tags;
 DROP TABLE IF EXISTS tags;
-DROP FUNCTION IF EXISTS prevent_circular_tag_references();
