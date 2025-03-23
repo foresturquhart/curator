@@ -85,9 +85,15 @@ func (w *Worker) enqueueReindex(ctx context.Context, taskType tasks.TaskType, uu
 		asynq.TaskID(fmt.Sprintf("%s:%s", string(taskType), uuid)),
 	)
 
-	if err != nil && !errors.Is(err, asynq.ErrDuplicateTask) {
+	if err != nil {
+		if errors.Is(err, asynq.ErrTaskIDConflict) || errors.Is(err, asynq.ErrDuplicateTask) {
+			log.Debug().Str("task", string(taskType)).Str("uuid", uuid).Msg("Reindex task already queued, skipping duplicate")
+			return nil
+		}
 		return fmt.Errorf("error enqueueing task: %w", err)
 	}
+
+	log.Debug().Str("task", string(taskType)).Str("uuid", uuid).Msg("Successfully enqueued reindex task")
 
 	return nil
 }
