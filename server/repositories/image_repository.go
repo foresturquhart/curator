@@ -497,7 +497,7 @@ func (r *ImageRepository) Upsert(ctx context.Context, image *models.Image) error
 
 	// Enqueue reindex after successful storage commit
 	if err := r.container.Worker.EnqueueReindexImage(ctx, image.UUID); err != nil {
-		log.Error().Err(err).Msgf("Failed to queue reindexing image %s", image.UUID)
+		log.Error().Err(err).Msgf("Failed to queue reindex of image %s", image.UUID)
 	}
 
 	return nil
