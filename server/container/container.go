@@ -10,6 +10,7 @@ import (
 	"github.com/foresturquhart/curator/server/config"
 	"github.com/foresturquhart/curator/server/database"
 	"github.com/foresturquhart/curator/server/elastic"
+	"github.com/foresturquhart/curator/server/tasks"
 	"github.com/foresturquhart/curator/server/vector"
 	"github.com/qdrant/go-client/qdrant"
 	"github.com/redis/go-redis/v9"
@@ -22,6 +23,7 @@ type Container struct {
 	Qdrant   *vector.Qdrant
 	Cache    *cache.Cache
 	Clip     *clip.Client
+	Worker   tasks.Client
 }
 
 func NewContainer(cfg *config.Config) (*Container, error) {

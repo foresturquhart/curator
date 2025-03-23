@@ -495,9 +495,9 @@ func (r *ImageRepository) Upsert(ctx context.Context, image *models.Image) error
 		return fmt.Errorf("error committing transaction: %w", err)
 	}
 
-	// Index in Elasticsearch after successful storage commit
-	if err := r.Reindex(ctx, image); err != nil {
-		log.Error().Err(err).Msgf("Failed to index image %s", image.UUID)
+	// Enqueue reindex after successful storage commit
+	if err := r.container.Worker.EnqueueReindexImage(ctx, image.UUID); err != nil {
+		log.Error().Err(err).Msgf("Failed to queue reindexing image %s", image.UUID)
 	}
 
 	return nil

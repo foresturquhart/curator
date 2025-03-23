@@ -414,9 +414,9 @@ func (r *PersonRepository) Upsert(ctx context.Context, person *models.Person) er
 		return fmt.Errorf("error committing transaction: %w", err)
 	}
 
-	// Index in Elasticsearch after successful storage commit
-	if err := r.Reindex(ctx, person); err != nil {
-		log.Error().Err(err).Msgf("Failed to index person %s", person.UUID)
+	// Enqueue reindex after successful storage commit
+	if err := r.container.Worker.EnqueueReindexPerson(ctx, person.UUID); err != nil {
+		log.Error().Err(err).Msgf("Failed to queue reindexing person %s", person.UUID)
 	}
 
 	return nil

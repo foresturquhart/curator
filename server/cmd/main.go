@@ -12,6 +12,7 @@ import (
 	"github.com/foresturquhart/curator/server/config"
 	"github.com/foresturquhart/curator/server/container"
 	"github.com/foresturquhart/curator/server/repositories"
+	"github.com/foresturquhart/curator/server/worker"
 	"github.com/labstack/echo/v4"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
@@ -45,7 +46,7 @@ func main() {
 	// Initialize repositories
 	imageRepository := repositories.NewImageRepository(c)
 	personRepository := repositories.NewPersonRepository(c)
-	// tagRepository := repositories.NewTagRepository(c)
+	tagRepository := repositories.NewTagRepository(c)
 	// collectionRepository := repositories.NewCollectionRepository(c)
 
 	if err := imageRepository.ReindexAll(context.Background()); err != nil {
@@ -60,6 +61,21 @@ func main() {
 	// if err := collectionRepository.ReindexAll(context.Background()); err != nil {
 	// 	log.Fatal().Err(err).Msg("Failed to reindex collections")
 	// }
+
+	// Initialize worker
+	worker, err := worker.NewWorker(c.Cache.Client, imageRepository, personRepository, tagRepository)
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to initialize background worker")
+	}
+
+	c.Worker = worker
+
+	// Start the worker in a goroutine
+	go func() {
+		if err := worker.Start(); err != nil {
+			log.Error().Err(err).Msg("Failed to start background worker")
+		}
+	}()
 
 	// Set up Echo server
 	e := echo.New()
@@ -88,6 +104,12 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
+	// Stop the worker gracefully
+	if err := worker.Stop(); err != nil {
+		log.Error().Err(err).Msg("Failed to gracefully stop background worker")
+	}
+
+	// Stop the server gracefully
 	if err := e.Shutdown(ctx); err != nil {
 		log.Fatal().Err(err).Msg("Failed to gracefully shutdown server")
 	}
