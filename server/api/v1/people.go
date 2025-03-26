@@ -10,26 +10,26 @@ import (
 
 	"github.com/foresturquhart/curator/server/container"
 	"github.com/foresturquhart/curator/server/models"
-	"github.com/foresturquhart/curator/server/repositories"
+	"github.com/foresturquhart/curator/server/services"
 	"github.com/foresturquhart/curator/server/utils"
 	"github.com/labstack/echo/v4"
 	"github.com/rs/zerolog/log"
 )
 
 type PersonHandler struct {
-	container  *container.Container
-	repository *repositories.PersonRepository
+	container *container.Container
+	service   *services.PersonService
 }
 
-func NewPersonHandler(c *container.Container, repo *repositories.PersonRepository) *PersonHandler {
+func NewPersonHandler(c *container.Container, svc *services.PersonService) *PersonHandler {
 	return &PersonHandler{
-		container:  c,
-		repository: repo,
+		container: c,
+		service:   svc,
 	}
 }
 
-func RegisterPersonRoutes(e *echo.Echo, c *container.Container, repo *repositories.PersonRepository) {
-	handler := NewPersonHandler(c, repo)
+func RegisterPersonRoutes(e *echo.Echo, c *container.Container, svc *services.PersonService) {
+	handler := NewPersonHandler(c, svc)
 
 	v1 := e.Group("/v1")
 	people := v1.Group("/people")
@@ -37,9 +37,9 @@ func RegisterPersonRoutes(e *echo.Echo, c *container.Container, repo *repositori
 	// Create
 	people.POST("", handler.CreatePerson)
 	people.GET("", handler.ListPeople)
-	people.GET("/:id", handler.GetPerson)
-	people.PUT("/:id", handler.UpdatePerson)
-	people.DELETE("/:id", handler.DeletePerson)
+	people.GET("/:uuid", handler.GetPerson)
+	people.PUT("/:uuid", handler.UpdatePerson)
+	people.DELETE("/:uuid", handler.DeletePerson)
 	people.POST("/search", handler.SearchPeople)
 }
 
@@ -89,15 +89,14 @@ func (h *PersonHandler) CreatePerson(c echo.Context) error {
 	}
 
 	// Store in database
-	if err := h.repository.Upsert(ctx, personModel); err != nil {
-		// Check if it's a conflict error
-		var conflictErr *utils.ConflictError
-		if errors.As(err, &conflictErr) {
+	if err := h.service.Create(ctx, personModel); err != nil {
+		if conflictErr, ok := err.(*utils.ConflictError); ok {
 			return c.JSON(http.StatusConflict, map[string]interface{}{
-				"error":       conflictErr.Message,
-				"conflict_id": conflictErr.ConflictID,
+				"error":       "A person with this name already exists",
+				"conflict_id": conflictErr.ConflictUUID,
 			})
 		}
+
 		return echo.NewHTTPError(http.StatusInternalServerError, "Error storing person: "+err.Error())
 	}
 
@@ -186,10 +185,10 @@ func (h *PersonHandler) ListPeople(c echo.Context) error {
 	}
 
 	ctx := c.Request().Context()
-	filter := models.PersonFilter{}
+	filter := &models.PersonFilter{}
 
 	// Apply pagination and sorting
-	err := applyPeoplePaginationAndSorting(&filter, req.Limit, req.StartingAfter,
+	err := applyPeoplePaginationAndSorting(filter, req.Limit, req.StartingAfter,
 		req.SortBy, req.SortDirection, h.container.Config.EncryptionKey)
 
 	if err != nil {
@@ -197,7 +196,7 @@ func (h *PersonHandler) ListPeople(c echo.Context) error {
 	}
 
 	// Execute search
-	people, err := h.repository.Search(ctx, filter)
+	people, err := h.service.Search(ctx, filter)
 	if err != nil {
 		log.Error().Err(err).Msg("Error listing people")
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to list people")
@@ -213,10 +212,10 @@ func (h *PersonHandler) ListPeople(c echo.Context) error {
 }
 
 func (h *PersonHandler) GetPerson(c echo.Context) error {
-	id := c.Param("id")
+	uuid := c.Param("uuid")
 	ctx := c.Request().Context()
 
-	personModel, err := h.repository.GetByUUID(ctx, id)
+	personModel, err := h.service.Get(ctx, uuid)
 	if err != nil {
 		if errors.Is(err, utils.ErrPersonNotFound) {
 			return echo.NewHTTPError(http.StatusNotFound, "Person not found")
@@ -228,11 +227,11 @@ func (h *PersonHandler) GetPerson(c echo.Context) error {
 }
 
 func (h *PersonHandler) UpdatePerson(c echo.Context) error {
-	id := c.Param("id")
+	uuid := c.Param("uuid")
 	ctx := c.Request().Context()
 
 	// Get existing person
-	existingPerson, err := h.repository.GetByUUID(ctx, id)
+	existingPerson, err := h.service.Get(ctx, uuid)
 	if err != nil {
 		if errors.Is(err, utils.ErrPersonNotFound) {
 			return echo.NewHTTPError(http.StatusNotFound, "Person not found")
@@ -275,23 +274,15 @@ func (h *PersonHandler) UpdatePerson(c echo.Context) error {
 		existingPerson.Sources = sources
 	}
 
-	// Check if the name is being changed to one that already exists
-	if updateData.Name != nil && *updateData.Name != existingPerson.Name {
-		existing, err := h.repository.GetByName(ctx, *updateData.Name)
-		if err != nil {
-			return echo.NewHTTPError(http.StatusInternalServerError, "Error checking duplicate names: "+err.Error())
-		}
-
-		if existing != nil && existing.UUID != existingPerson.UUID {
+	// Save updates
+	if err := h.service.Update(ctx, existingPerson); err != nil {
+		if conflictErr, ok := err.(*utils.ConflictError); ok {
 			return c.JSON(http.StatusConflict, map[string]interface{}{
 				"error":       "A person with this name already exists",
-				"conflict_id": existing.UUID,
+				"conflict_id": conflictErr.ConflictUUID,
 			})
 		}
-	}
 
-	// Save updates
-	if err := h.repository.Upsert(ctx, existingPerson); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to update person: "+err.Error())
 	}
 
@@ -299,11 +290,11 @@ func (h *PersonHandler) UpdatePerson(c echo.Context) error {
 }
 
 func (h *PersonHandler) DeletePerson(c echo.Context) error {
-	id := c.Param("id")
+	uuid := c.Param("uuid")
 	ctx := c.Request().Context()
 
 	// Delete from database
-	if err := h.repository.Delete(ctx, id); err != nil {
+	if err := h.service.Delete(ctx, uuid); err != nil {
 		if errors.Is(err, utils.ErrPersonNotFound) {
 			return echo.NewHTTPError(http.StatusNotFound, "Person not found")
 		}
@@ -355,10 +346,10 @@ func (h *PersonHandler) SearchPeople(c echo.Context) error {
 	ctx := c.Request().Context()
 
 	// Build filter from request
-	filter := models.PersonFilter{}
+	filter := &models.PersonFilter{}
 
 	// Apply pagination and sorting
-	err := applyPeoplePaginationAndSorting(&filter, req.Limit, req.StartingAfter,
+	err := applyPeoplePaginationAndSorting(filter, req.Limit, req.StartingAfter,
 		req.SortBy, req.SortDirection, h.container.Config.EncryptionKey)
 
 	if err != nil {
@@ -398,7 +389,7 @@ func (h *PersonHandler) SearchPeople(c echo.Context) error {
 	}
 
 	// Execute search
-	people, err := h.repository.Search(ctx, filter)
+	people, err := h.service.Search(ctx, filter)
 	if err != nil {
 		log.Error().Err(err).Msg("Error searching people")
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to search people")

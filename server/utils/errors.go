@@ -1,6 +1,9 @@
 package utils
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 var (
 	ErrImageNotFound  = errors.New("image not found")
@@ -12,10 +15,10 @@ var (
 
 // ConflictError represents a conflict with an existing resource
 type ConflictError struct {
-	Message    string
-	ConflictID string
+	Message      string
+	ConflictUUID string
 }
 
 func (e *ConflictError) Error() string {
-	return e.Message
+	return fmt.Sprintf("Conflict: %s (UUID: %s)", e.Message, e.ConflictUUID)
 }

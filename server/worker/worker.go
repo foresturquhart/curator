@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/foresturquhart/curator/server/repositories"
+	"github.com/foresturquhart/curator/server/services"
 	"github.com/foresturquhart/curator/server/tasks"
 	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
@@ -18,9 +19,10 @@ type Worker struct {
 	server *asynq.Server
 	client *asynq.Client
 
-	imageRepository  *repositories.ImageRepository
-	personRepository *repositories.PersonRepository
-	tagRepository    *repositories.TagRepository
+	imageRepository *repositories.ImageRepository
+	tagRepository   *repositories.TagRepository
+
+	personService *services.PersonService
 }
 
 // Ensure Worker implements tasks.Client
@@ -30,8 +32,8 @@ var _ tasks.Client = (*Worker)(nil)
 func NewWorker(
 	redisClient redis.UniversalClient,
 	imageRepository *repositories.ImageRepository,
-	personRepository *repositories.PersonRepository,
 	tagRepository *repositories.TagRepository,
+	personService *services.PersonService,
 ) (*Worker, error) {
 	// Configure server with queues and priorities
 	server := asynq.NewServerFromRedisClient(
@@ -49,11 +51,11 @@ func NewWorker(
 	client := asynq.NewClientFromRedisClient(redisClient)
 
 	return &Worker{
-		server:           server,
-		client:           client,
-		imageRepository:  imageRepository,
-		personRepository: personRepository,
-		tagRepository:    tagRepository,
+		server:          server,
+		client:          client,
+		imageRepository: imageRepository,
+		tagRepository:   tagRepository,
+		personService:   personService,
 	}, nil
 }
 
@@ -144,12 +146,12 @@ func (w *Worker) handleReindexPerson(ctx context.Context, task *asynq.Task) erro
 
 	log.Info().Str("uuid", uuid).Msg("Executing indexing job for person")
 
-	person, err := w.personRepository.GetByUUID(ctx, uuid)
+	person, err := w.personService.Get(ctx, uuid)
 	if err != nil {
 		return fmt.Errorf("error getting person: %w", err)
 	}
 
-	if err := w.personRepository.Reindex(ctx, person); err != nil {
+	if err := w.personService.Index(ctx, person); err != nil {
 		return fmt.Errorf("error reindexing person: %w", err)
 	}
 
