@@ -8,14 +8,14 @@ require (
 	github.com/elastic/go-elasticsearch/v8 v8.17.1
 	github.com/golang-migrate/migrate/v4 v4.18.2
 	github.com/hibiken/asynq v0.25.1
-	github.com/jackc/pgx/v5 v5.7.2
+	github.com/jackc/pgx/v5 v5.7.4
 	github.com/labstack/echo/v4 v4.13.3
 	github.com/pgvector/pgvector-go v0.3.0
 	github.com/qdrant/go-client v1.13.0
-	github.com/rs/zerolog v1.33.0
+	github.com/rs/zerolog v1.34.0
 	github.com/xxtea/xxtea-go v1.0.0
 	google.golang.org/grpc v1.71.0
-	google.golang.org/protobuf v1.36.5
+	google.golang.org/protobuf v1.36.6
 )
 
 require (
