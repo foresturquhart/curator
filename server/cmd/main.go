@@ -55,9 +55,9 @@ func main() {
 	if err := personRepository.ReindexAll(context.Background()); err != nil {
 		log.Fatal().Err(err).Msg("Failed to reindex people")
 	}
-	// if err := tagRepository.ReindexAll(context.Background()); err != nil {
-	// 	log.Fatal().Err(err).Msg("Failed to reindex tags")
-	// }
+	if err := tagRepository.ReindexAll(context.Background()); err != nil {
+		log.Fatal().Err(err).Msg("Failed to reindex tags")
+	}
 	// if err := collectionRepository.ReindexAll(context.Background()); err != nil {
 	// 	log.Fatal().Err(err).Msg("Failed to reindex collections")
 	// }

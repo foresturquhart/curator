@@ -116,11 +116,10 @@ func (w *Worker) EnqueueReindexPerson(ctx context.Context, uuid string) error {
 
 func (w *Worker) EnqueueReindexTag(ctx context.Context, uuid string) error {
 	if err := w.enqueueReindex(ctx, tasks.TypeReindexTag, uuid); err != nil {
-		return fmt.Errorf("error enqueueing image reindex: %w", err)
+		return fmt.Errorf("error enqueueing tag reindex: %w", err)
 	}
 
 	return nil
-
 }
 
 func (w *Worker) handleReindexImage(ctx context.Context, task *asynq.Task) error {
@@ -158,18 +157,18 @@ func (w *Worker) handleReindexPerson(ctx context.Context, task *asynq.Task) erro
 }
 
 func (w *Worker) handleReindexTag(ctx context.Context, task *asynq.Task) error {
-	// uuid := string(task.Payload())
+	uuid := string(task.Payload())
 
-	// log.Info().Str("uuid", uuid).Msg("Executing indexing job for tag")
+	log.Info().Str("uuid", uuid).Msg("Executing indexing job for tag")
 
-	// tag, err := w.tagRepository.GetByUUID(ctx, uuid)
-	// if err != nil {
-	// 	return fmt.Errorf("error getting tag: %w", err)
-	// }
+	tag, err := w.tagRepository.GetByUUID(ctx, uuid)
+	if err != nil {
+		return fmt.Errorf("error getting tag: %w", err)
+	}
 
-	// if err := w.tagRepository.Reindex(ctx, tag); err != nil {
-	// 	return fmt.Errorf("error reindexing tag: %w", err)
-	// }
+	if err := w.tagRepository.Reindex(ctx, tag); err != nil {
+		return fmt.Errorf("error reindexing tag: %w", err)
+	}
 
 	return nil
 }
