@@ -1015,7 +1015,9 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 		// This is a pattern to intentionally return no results
 		filters = append(filters, types.Query{
 			Term: map[string]types.TermQuery{
-				"uuid": {Value: "impossible_uuid_that_will_never_match"},
+				"uuid": {
+					Value: "impossible_uuid_that_will_never_match",
+				},
 			},
 		})
 	}
@@ -1024,7 +1026,10 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 	if filter.Title != "" {
 		shoulds = append(shoulds, types.Query{
 			Match: map[string]types.MatchQuery{
-				"title": {Query: filter.Title, Boost: utils.NewPointer(float32(2.0))},
+				"title": {
+					Query: filter.Title,
+					Boost: utils.NewPointer(float32(2.0)),
+				},
 			},
 		})
 	}
@@ -1033,7 +1038,9 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 	if filter.Description != "" {
 		shoulds = append(shoulds, types.Query{
 			Match: map[string]types.MatchQuery{
-				"description": {Query: filter.Description},
+				"description": {
+					Query: filter.Description,
+				},
 			},
 		})
 	}
