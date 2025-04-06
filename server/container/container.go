@@ -5,44 +5,43 @@ import (
 	"fmt"
 
 	"github.com/elastic/go-elasticsearch/v8"
-	"github.com/foresturquhart/curator/server/cache"
 	"github.com/foresturquhart/curator/server/clip"
 	"github.com/foresturquhart/curator/server/config"
-	"github.com/foresturquhart/curator/server/database"
-	"github.com/foresturquhart/curator/server/elastic"
+	"github.com/foresturquhart/curator/server/storage"
 	"github.com/foresturquhart/curator/server/tasks"
-	"github.com/foresturquhart/curator/server/vector"
 	"github.com/qdrant/go-client/qdrant"
 	"github.com/redis/go-redis/v9"
 )
 
 type Container struct {
 	Config   *config.Config
-	Database *database.Database
-	Elastic  *elastic.Elastic
-	Qdrant   *vector.Qdrant
-	Cache    *cache.Cache
+	Postgres *storage.Postgres
+	Elastic  *storage.Elastic
+	Qdrant   *storage.Qdrant
+	Redis    *storage.Redis
+	S3       *storage.S3
 	Clip     *clip.Client
 	Worker   tasks.Client
 }
 
-func NewContainer(cfg *config.Config) (*Container, error) {
-	// Initialize database client
-	databaseClient, err := database.NewDatabase(cfg.DatabaseURL)
+func NewContainer(ctx context.Context, cfg *config.Config) (*Container, error) {
+	// Initialize postgres client
+	postgresClient, err := storage.NewPostgres(cfg.PostgresURL)
 	if err != nil {
-		return nil, fmt.Errorf("failed to initialize database: %w", err)
+		return nil, fmt.Errorf("failed to initialize postgres: %w", err)
 	}
 
 	// Initialize elastic client
-	elasticClient, err := elastic.NewElastic(elasticsearch.Config{
+	elasticClient, err := storage.NewElastic(elasticsearch.Config{
 		Addresses: []string{cfg.ElasticsearchURL},
+		// Logger:    &CustomLogger{log},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize elasticsearch: %w", err)
 	}
 
 	// Initialize qdrant client
-	qdrantClient, err := vector.NewQdrant(&qdrant.Config{
+	qdrantClient, err := storage.NewQdrant(&qdrant.Config{
 		Host: cfg.QdrantHost,
 		Port: cfg.QdrantPort,
 	})
@@ -51,13 +50,28 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 	}
 
 	// Initialize redis client
-	redisClient, err := cache.NewCache(&redis.Options{
+	redisClient, err := storage.NewRedis(&redis.Options{
 		Addr:     cfg.RedisAddr,
 		Password: cfg.RedisPassword,
 		DB:       cfg.RedisDatabase,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize redis: %w", err)
+	}
+
+	// Initialize s3 client
+	s3Client, err := storage.NewS3(ctx, &storage.S3Config{
+		Endpoint:        cfg.S3Endpoint,
+		AccessKeyID:     cfg.S3AccessKeyID,
+		Region:          cfg.S3Region,
+		SecretAccessKey: cfg.S3SecretAccessKey,
+		UseSSL:          cfg.S3UseSSL,
+		ForcePathStyle:  cfg.S3ForcePathStyle,
+		Bucket:          cfg.S3Bucket,
+		CreateBucket:    cfg.S3CreateBucket,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize s3: %w", err)
 	}
 
 	// Initialize clip client
@@ -68,10 +82,11 @@ func NewContainer(cfg *config.Config) (*Container, error) {
 
 	return &Container{
 		Config:   cfg,
-		Database: databaseClient,
+		Postgres: postgresClient,
 		Elastic:  elasticClient,
 		Qdrant:   qdrantClient,
-		Cache:    redisClient,
+		Redis:    redisClient,
+		S3:       s3Client,
 		Clip:     clipClient,
 	}, nil
 }
@@ -82,21 +97,21 @@ func (c *Container) Close() {
 		c.Clip.Close()
 	}
 
-	if c.Cache != nil {
-		c.Cache.Close()
+	if c.Redis != nil {
+		c.Redis.Close()
 	}
 
 	if c.Qdrant != nil {
 		c.Qdrant.Close()
 	}
 
-	if c.Database != nil {
-		c.Database.Close()
+	if c.Postgres != nil {
+		c.Postgres.Close()
 	}
 }
 
 func (c *Container) Migrate(ctx context.Context) error {
-	if err := c.Database.Migrate(); err != nil {
+	if err := c.Postgres.Migrate(); err != nil {
 		return fmt.Errorf("failed to migrate database: %w", err)
 	}
 

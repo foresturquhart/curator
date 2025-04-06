@@ -1,6 +1,7 @@
 package v1
 
 import (
+	"bytes"
 	"crypto/md5"
 	"crypto/sha1"
 	"encoding/hex"
@@ -12,10 +13,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
-	"mime/multipart"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -38,21 +36,6 @@ func NewImageHandler(c *container.Container, repo *repositories.ImageRepository)
 		container:  c,
 		repository: repo,
 	}
-}
-
-func RegisterImageRoutes(e *echo.Echo, c *container.Container, repo *repositories.ImageRepository) {
-	handler := NewImageHandler(c, repo)
-
-	v1 := e.Group("/v1")
-	images := v1.Group("/images")
-
-	// Create
-	images.POST("", handler.CreateImage)
-	images.GET("", handler.ListImages)
-	images.GET("/:id", handler.GetImage)
-	images.PUT("/:id", handler.UpdateImage)
-	images.DELETE("/:id", handler.DeleteImage)
-	images.POST("/search", handler.SearchImages)
 }
 
 // ImageTagRequest represents a tag in API requests
@@ -94,18 +77,17 @@ func (h *ImageHandler) CreateImage(c echo.Context) error {
 	}
 	defer file.Close()
 
-	// Read the first 512 bytes to detect content type
-	buffer := make([]byte, 512)
-	_, err = file.Read(buffer)
+	fileBytes, err := io.ReadAll(file)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusBadRequest, "Error reading file: "+err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error reading file content: "+err.Error())
 	}
 
-	// Reset file pointer to beginning
-	_, err = file.Seek(0, io.SeekStart)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "Error processing file: "+err.Error())
+	fileReader := bytes.NewReader(fileBytes)
+	fileSize := int64(len(fileBytes))
+	if fileSize < 512 {
+		return echo.NewHTTPError(http.StatusBadRequest, "File too small to reliably determine content type")
 	}
+	buffer := fileBytes[:512]
 
 	// Detect content type from file contents, not extension
 	contentType := http.DetectContentType(buffer)
@@ -123,19 +105,24 @@ func (h *ImageHandler) CreateImage(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "Unsupported image format: "+contentType)
 	}
 
-	// Calculate file hashes
-	md5Hash, sha1Hash, err := calculateFileHashes(file)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "Error calculating file hashes: "+err.Error())
-	}
-
-	// Reset file pointer to beginning
-	_, err = file.Seek(0, io.SeekStart)
+	_, err = fileReader.Seek(0, io.SeekStart)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Error processing file: "+err.Error())
 	}
 
-	// Check for duplicate image by hash
+	// Calculate file hashes
+	md5Hash, sha1Hash, err := calculateFileHashes(fileReader)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error calculating file hashes: "+err.Error())
+	}
+
+	_, err = fileReader.Seek(0, io.SeekStart)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error processing file: "+err.Error())
+	}
+
+	// TODO: stop checking for existing image here and instead do it in the Upsert function
+	// We then check for the duplicate and return an error at that point
 	existingFilter := models.ImageFilter{
 		Hash: md5Hash,
 	}
@@ -149,29 +136,27 @@ func (h *ImageHandler) CreateImage(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusConflict, "Duplicate image detected with MD5: "+md5Hash)
 	}
 
+	_, err = fileReader.Seek(0, io.SeekStart)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error processing file: "+err.Error())
+	}
+
 	// Get image dimensions
-	imgConfig, _, err := image.DecodeConfig(file)
+	imgConfig, _, err := image.DecodeConfig(fileReader)
 	if err != nil {
 		log.Error().Err(err).Msg("Error decoding image config")
 		return echo.NewHTTPError(http.StatusBadRequest, "Error reading image dimensions: "+err.Error())
 	}
 
-	// Reset file pointer to beginning
-	_, err = file.Seek(0, io.SeekStart)
+	_, err = fileReader.Seek(0, io.SeekStart)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Error processing file: "+err.Error())
 	}
 
 	// Get embedding from CLIP service
-	embedding, err := h.container.Clip.GetEmbeddingFromReader(ctx, file)
+	embedding, err := h.container.Clip.GetEmbeddingFromReader(ctx, fileReader)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Error getting image embedding: "+err.Error())
-	}
-
-	// Reset file pointer to beginning
-	_, err = file.Seek(0, io.SeekStart)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "Error processing file: "+err.Error())
 	}
 
 	// Parse metadata from form
@@ -234,7 +219,7 @@ func (h *ImageHandler) CreateImage(c echo.Context) error {
 		Width:       imgConfig.Width,
 		Height:      imgConfig.Height,
 		Format:      format,
-		Size:        fileHeader.Size,
+		Size:        fileSize,
 		Embedding:   &imageEmbedding,
 		Title:       metadata.Title,
 		Description: metadata.Description,
@@ -248,42 +233,29 @@ func (h *ImageHandler) CreateImage(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Error storing image: "+err.Error())
 	}
 
-	filePath := filepath.Join(h.container.Config.StoragePath, imageModel.GetStoredName())
+	storageKey := imageModel.GetStoredName()
 
-	// Ensure directory exists
-	if err := os.MkdirAll(h.container.Config.StoragePath, 0755); err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "Error creating storage directory: "+err.Error())
+	_, err = fileReader.Seek(0, io.SeekStart)
+	if err != nil {
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error processing file: "+err.Error())
 	}
 
-	// Create destination file
-	dst, err := os.Create(filePath)
+	err = h.container.S3.Upload(ctx, storageKey, fileReader, imageModel.Size, contentType)
 	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "Error creating file: "+err.Error())
-	}
-	defer dst.Close()
-
-	// Copy file to destination
-	_, err = io.Copy(dst, file)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "Error writing file: "+err.Error())
+		return echo.NewHTTPError(http.StatusInternalServerError, "Error uploading image file: "+err.Error())
 	}
 
 	return c.JSON(http.StatusCreated, imageModel)
 }
 
 // calculateFileHashes calculates MD5 and SHA1 hashes of a file
-func calculateFileHashes(file multipart.File) (string, string, error) {
+func calculateFileHashes(reader io.Reader) (string, string, error) {
 	md5Hasher := md5.New()
 	sha1Hasher := sha1.New()
 
-	multiWriter := io.MultiWriter(md5Hasher, sha1Hasher)
+	teeReader := io.TeeReader(reader, io.MultiWriter(md5Hasher, sha1Hasher))
 
-	if _, err := io.Copy(multiWriter, file); err != nil {
-		return "", "", err
-	}
-
-	// Reset file pointer to beginning
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
+	if _, err := io.Copy(io.Discard, teeReader); err != nil {
 		return "", "", err
 	}
 
@@ -338,9 +310,9 @@ func applyImagesPaginationAndSorting(filter *models.ImageFilter, limit *int, sta
 	if sortDirection != nil {
 		switch *sortDirection {
 		case "asc":
-			filter.SortDirection = models.SortDirectionAsc
+			filter.SortDirection = utils.SortDirectionAsc
 		case "desc":
-			filter.SortDirection = models.SortDirectionDesc
+			filter.SortDirection = utils.SortDirectionDesc
 		default:
 			return fmt.Errorf("invalid sort_direction option: %s", *sortDirection)
 		}
@@ -524,7 +496,7 @@ func (h *ImageHandler) DeleteImage(c echo.Context) error {
 	}
 
 	// Determine stored file path
-	filePath := filepath.Join(h.container.Config.StoragePath, imageModel.GetStoredName())
+	storageKey := imageModel.GetStoredName()
 
 	// Delete from database (this also handles Elasticsearch and Qdrant deletion)
 	if err := h.repository.Delete(ctx, id); err != nil {
@@ -534,12 +506,9 @@ func (h *ImageHandler) DeleteImage(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "Failed to delete image from database: "+err.Error())
 	}
 
-	// Delete the file
-	if err := os.Remove(filePath); err != nil {
-		// Log the error but don't fail the request if the file doesn't exist
-		if !os.IsNotExist(err) {
-			log.Error().Err(err).Str("path", filePath).Msg("Failed to delete image file")
-		}
+	// Delete the object from S3 storage
+	if err := h.container.S3.Delete(ctx, storageKey); err != nil {
+		log.Error().Err(err).Str("key", storageKey).Msg("Failed to delete image object from storage")
 	}
 
 	return c.NoContent(http.StatusNoContent)
@@ -712,7 +681,7 @@ func (h *ImageHandler) SearchImages(c echo.Context) error {
 
 			// Force sort by similarity
 			filter.SortBy = models.SortByRelevance
-			filter.SortDirection = models.SortDirectionDesc
+			filter.SortDirection = utils.SortDirectionDesc
 		}
 	}
 

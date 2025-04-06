@@ -8,6 +8,7 @@ import (
 	"github.com/foresturquhart/curator/server/models"
 	"github.com/foresturquhart/curator/server/repositories"
 	"github.com/foresturquhart/curator/server/search"
+	"github.com/foresturquhart/curator/server/utils"
 	"github.com/rs/zerolog/log"
 )
 
@@ -29,20 +30,40 @@ func (s *PersonService) Get(ctx context.Context, uuid string) (*models.Person, e
 	return s.repo.GetByUUID(ctx, uuid)
 }
 
+func (s *PersonService) GetByInternalID(ctx context.Context, id int64) (*models.Person, error) {
+	return s.repo.GetByInternalID(ctx, id)
+}
+
 func (s *PersonService) Create(ctx context.Context, person *models.Person) error {
 	if err := s.repo.Create(ctx, person); err != nil {
 		return fmt.Errorf("failed to create person: %w", err)
 	}
 
-	if err := s.search.Index(ctx, person); err != nil {
+	if err := s.search.Index(ctx, person.ToSearchRecord()); err != nil {
 		log.Error().Err(err).Msgf("Failed to index person %s", person.UUID)
 	}
 
 	return nil
 }
 
-func (s *PersonService) Search(ctx context.Context, filter *models.PersonFilter) (*models.PaginatedPersonResult, error) {
-	return s.search.Search(ctx, filter)
+func (s *PersonService) Search(ctx context.Context, options *search.PersonSearchOptions) (*utils.PaginatedResult[*models.Person], error) {
+	result, err := s.search.Search(ctx, options)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to search for people: %w", err)
+	}
+
+	var data []*models.Person
+	for _, result := range result.Results {
+		data = append(data, result.ToModel())
+	}
+
+	return &utils.PaginatedResult[*models.Person]{
+		Data:       data,
+		HasMore:    result.HasMore,
+		TotalCount: result.TotalCount,
+		NextCursor: result.NextCursor,
+	}, nil
 }
 
 func (s *PersonService) Update(ctx context.Context, person *models.Person) error {
@@ -50,17 +71,17 @@ func (s *PersonService) Update(ctx context.Context, person *models.Person) error
 		return fmt.Errorf("failed to update person: %w", err)
 	}
 
-	if err := s.search.Index(ctx, person); err != nil {
+	if err := s.search.Index(ctx, person.ToSearchRecord()); err != nil {
 		log.Error().Err(err).Msgf("Failed to index person %s", person.UUID)
 	}
 
-	imageUUIDs, err := s.repo.FindImagesByPersonUUID(ctx, person.UUID)
+	imageIDs, err := s.repo.FindImagesByPersonUUID(ctx, person.UUID)
 	if err != nil {
 		log.Error().Err(err).Msgf("Failed to fetch associated images for person %s", person.UUID)
 	} else {
-		for _, imageUUID := range imageUUIDs {
-			if err := s.container.Worker.EnqueueReindexImage(ctx, imageUUID); err != nil {
-				log.Error().Err(err).Str("uuid", imageUUID).Msg("Error reindexing image after person deletion")
+		for _, imageID := range imageIDs {
+			if err := s.container.Worker.EnqueueReindexImage(ctx, imageID); err != nil {
+				log.Error().Err(err).Int64("id", imageID).Msg("Error reindexing image after person deletion")
 			}
 		}
 	}
@@ -69,7 +90,7 @@ func (s *PersonService) Update(ctx context.Context, person *models.Person) error
 }
 
 func (s *PersonService) Index(ctx context.Context, person *models.Person) error {
-	return s.search.Index(ctx, person)
+	return s.search.Index(ctx, person.ToSearchRecord())
 }
 
 func (s *PersonService) IndexAll(ctx context.Context) error {
@@ -90,7 +111,7 @@ func (s *PersonService) IndexAll(ctx context.Context) error {
 		}
 
 		// Index in a new transaction
-		if err := s.search.Index(ctx, person); err != nil {
+		if err := s.search.Index(ctx, person.ToSearchRecord()); err != nil {
 			log.Error().Err(err).Msgf("Error reindexing person %s", person.UUID)
 			continue
 		}
@@ -102,7 +123,7 @@ func (s *PersonService) IndexAll(ctx context.Context) error {
 }
 
 func (s *PersonService) Delete(ctx context.Context, uuid string) error {
-	imageUUIDs, err := s.repo.FindImagesByPersonUUID(ctx, uuid)
+	imageIDs, err := s.repo.FindImagesByPersonUUID(ctx, uuid)
 	if err != nil {
 		log.Error().Err(err).Msgf("Error retrieving associated images for person %s", uuid)
 	}
@@ -117,9 +138,9 @@ func (s *PersonService) Delete(ctx context.Context, uuid string) error {
 	}
 
 	// Handle reindexing for associated images
-	for _, imageUUID := range imageUUIDs {
-		if err := s.container.Worker.EnqueueReindexImage(ctx, imageUUID); err != nil {
-			log.Error().Err(err).Str("uuid", imageUUID).Msg("Error reindexing image after person deletion")
+	for _, imageID := range imageIDs {
+		if err := s.container.Worker.EnqueueReindexImage(ctx, imageID); err != nil {
+			log.Error().Err(err).Int64("id", imageID).Msg("Error reindexing image after person deletion")
 		}
 	}
 

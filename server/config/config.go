@@ -10,7 +10,7 @@ type Config struct {
 
 	EncryptionKey string `env:"ENCRYPTION_KEY" envDefault:"secret"`
 
-	DatabaseURL string `env:"DATABASE_URL" envDefault:"postgresql://curator:curator@127.0.0.1:5432/curator"`
+	PostgresURL string `env:"POSTGRES_URL" envDefault:"postgresql://curator:curator@127.0.0.1:5432/curator"`
 
 	ElasticsearchURL string `env:"ELASTICSEARCH_URL" envDefault:"http://127.0.0.1:9200"`
 
@@ -24,7 +24,14 @@ type Config struct {
 	ClipHost string `env:"CLIP_HOST" envDefault:"127.0.0.1"`
 	ClipPort int    `env:"CLIP_PORT" envDefault:"50051"`
 
-	StoragePath string `env:"STORAGE_PATH" envDefault:"./images"`
+	S3Endpoint        string `env:"S3_ENDPOINT" envDefault:"http://127.0.0.1:9000"`
+	S3AccessKeyID     string `env:"S3_ACCESS_KEY_ID" envDefault:"minioadmin"`
+	S3Region          string `env:"S3_REGION" envDefault:"eu-west-1"`
+	S3SecretAccessKey string `env:"S3_SECRET_ACCESS_KEY" envDefault:"minioadmin"`
+	S3UseSSL          bool   `env:"S3_USE_SSL" envDefault:"false"`
+	S3ForcePathStyle  bool   `env:"S3_FORCE_PATH_STYLE" envDefault:"true"`
+	S3Bucket          string `env:"S3_BUCKET" envDefault:"curator"`
+	S3CreateBucket    bool   `env:"S3_CREATE_BUCKET" envDefault:"true"`
 }
 
 func Load() (*Config, error) {

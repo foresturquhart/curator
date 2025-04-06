@@ -1,30 +1,80 @@
 package models
 
-import "time"
+import (
+	"time"
+)
 
-// Tag represents a tag entity in the system
 type Tag struct {
-	ID          int64     `json:"id"`          // Internal primary key
-	UUID        string    `json:"uuid"`        // Public-facing identifier
-	Name        string    `json:"name"`        // Tag name
-	Description string    `json:"description"` // Tag description
-	ParentID    *int64    `json:"-"`
-	Position    int64     `json:"-"`
-	CreatedAt   time.Time `json:"created_at"` // Creation timestamp
-	UpdatedAt   time.Time `json:"updated_at"` // Last update timestamp
+	ID          int64     `json:"id"`
+	UUID        string    `json:"uuid"`
+	Name        string    `json:"name"`
+	Description *string   `json:"description"`
+	ParentID    *int64    `json:"parent_id,omitempty"`
+	Position    int32     `json:"position,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-// TagNode represents a tag in the tree with its nested children.
-// This is an output type that extends models.Tag with tree information.
-type TagNode struct {
-	Tag
-	Children []*TagNode `json:"children,omitempty"`
+func (t *Tag) ToSearchRecord() *TagSearchRecord {
+	return &TagSearchRecord{
+		ID:          t.ID,
+		UUID:        t.UUID,
+		Name:        t.Name,
+		Description: t.Description,
+		ParentID:    t.ParentID,
+		CreatedAt:   t.CreatedAt,
+		UpdatedAt:   t.UpdatedAt,
+	}
 }
 
-// TagFilter represents the filtering options for tag queries
-type TagFilter struct {
-	Name        string     // Full text search by name
-	Description string     // Full text search by description
-	SinceDate   *time.Time // Filter for tags created after this date
-	BeforeDate  *time.Time // Filter for tags created before this date
+func (t *Tag) ToCacheFields() map[string]any {
+	fields := map[string]any{
+		"id":         t.ID,
+		"uuid":       t.UUID,
+		"name":       t.Name,
+		"position":   t.Position,
+		"created_at": t.CreatedAt.Format(time.RFC3339),
+		"updated_at": t.UpdatedAt.Format(time.RFC3339),
+	}
+
+	if t.Description != nil {
+		fields["description"] = *t.Description
+	} else {
+		fields["description"] = ""
+	}
+
+	if t.ParentID != nil {
+		fields["parent_id"] = *t.ParentID
+	} else {
+		fields["parent_id"] = ""
+	}
+
+	return fields
+}
+
+type TagSearchRecord struct {
+	ID          int64     `json:"id"`
+	UUID        string    `json:"uuid"`
+	Name        string    `json:"name"`
+	Description *string   `json:"description,omitempty"`
+	ParentID    *int64    `json:"parent_id,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
+func (r *TagSearchRecord) ToModel() *Tag {
+	return &Tag{
+		ID:          r.ID,
+		UUID:        r.UUID,
+		Name:        r.Name,
+		Description: r.Description,
+		ParentID:    r.ParentID,
+		CreatedAt:   r.CreatedAt,
+		UpdatedAt:   r.UpdatedAt,
+	}
+}
+
+type TagTreeNode struct {
+	Tag      *Tag           `json:"tag"`
+	Children []*TagTreeNode `json:"children,omitempty"`
 }

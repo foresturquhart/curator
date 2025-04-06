@@ -26,6 +26,7 @@ func init() {
 					},
 				},
 			},
+			"parent_id":  types.LongNumberProperty{},
 			"created_at": types.DateProperty{},
 			"updated_at": types.DateProperty{},
 		},

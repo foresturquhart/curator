@@ -1,4 +1,4 @@
-package database
+package storage
 
 import (
 	"context"
@@ -20,18 +20,18 @@ import (
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-type Database struct {
+type Postgres struct {
 	Pool *pgxpool.Pool
 	dsn  string
 }
 
-func NewDatabase(dsn string) (*Database, error) {
+func NewPostgres(dsn string) (*Postgres, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
 	cfg, err := pgxpool.ParseConfig(dsn)
 	if err != nil {
-		return nil, fmt.Errorf("unable to parse database config: %w", err)
+		return nil, fmt.Errorf("unable to parse postgres config: %w", err)
 	}
 
 	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
@@ -44,24 +44,24 @@ func NewDatabase(dsn string) (*Database, error) {
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
-		return nil, fmt.Errorf("unable to create database connection pool: %w", err)
+		return nil, fmt.Errorf("unable to create postgres connection pool: %w", err)
 	}
 
 	if err := pool.Ping(ctx); err != nil {
-		return nil, fmt.Errorf("unable to connect to database: %w", err)
+		return nil, fmt.Errorf("unable to connect to postgres: %w", err)
 	}
 
-	return &Database{
+	return &Postgres{
 		Pool: pool,
 		dsn:  dsn,
 	}, nil
 }
 
-func (d *Database) Close() {
+func (d *Postgres) Close() {
 	d.Pool.Close()
 }
 
-func (d *Database) Migrate() error {
+func (d *Postgres) Migrate() error {
 	source, err := iofs.New(migrations, "migrations")
 	if err != nil {
 		return fmt.Errorf("unable to load embedded migrations: %v", err)

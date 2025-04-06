@@ -1,16 +1,18 @@
 package worker
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"time"
 
+	"github.com/foresturquhart/curator/server/container"
 	"github.com/foresturquhart/curator/server/repositories"
 	"github.com/foresturquhart/curator/server/services"
 	"github.com/foresturquhart/curator/server/tasks"
 	"github.com/hibiken/asynq"
-	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 )
 
@@ -20,9 +22,9 @@ type Worker struct {
 	client *asynq.Client
 
 	imageRepository *repositories.ImageRepository
-	tagRepository   *repositories.TagRepository
 
 	personService *services.PersonService
+	tagService    *services.TagService
 }
 
 // Ensure Worker implements tasks.Client
@@ -30,14 +32,14 @@ var _ tasks.Client = (*Worker)(nil)
 
 // NewWorker creates a new worker with the given container and repositories
 func NewWorker(
-	redisClient redis.UniversalClient,
+	container *container.Container,
 	imageRepository *repositories.ImageRepository,
-	tagRepository *repositories.TagRepository,
 	personService *services.PersonService,
+	tagService *services.TagService,
 ) (*Worker, error) {
 	// Configure server with queues and priorities
 	server := asynq.NewServerFromRedisClient(
-		redisClient,
+		container.Redis.Client,
 		asynq.Config{
 			Queues: map[string]int{
 				tasks.QueueReindex: 10,
@@ -48,14 +50,14 @@ func NewWorker(
 	)
 
 	// Client for enqueuing tasks
-	client := asynq.NewClientFromRedisClient(redisClient)
+	client := asynq.NewClientFromRedisClient(container.Redis.Client)
 
 	return &Worker{
 		server:          server,
 		client:          client,
 		imageRepository: imageRepository,
-		tagRepository:   tagRepository,
 		personService:   personService,
+		tagService:      tagService,
 	}, nil
 }
 
@@ -74,8 +76,23 @@ func (w *Worker) Stop() error {
 	return w.client.Close()
 }
 
-func (w *Worker) enqueueReindex(ctx context.Context, taskType tasks.TaskType, uuid string) error {
-	task := asynq.NewTask(string(taskType), []byte(uuid))
+func (w *Worker) encodeIdPayload(id int64) []byte {
+	buf := new(bytes.Buffer)
+	binary.Write(buf, binary.BigEndian, id)
+	return buf.Bytes()
+}
+
+func (w *Worker) decodeIdPayload(b []byte) int64 {
+	buf := bytes.NewReader(b)
+	var n int64
+	binary.Read(buf, binary.BigEndian, &n)
+	return n
+}
+
+func (w *Worker) enqueueReindex(ctx context.Context, taskType tasks.TaskType, id int64) error {
+	payload := w.encodeIdPayload(id)
+
+	task := asynq.NewTask(string(taskType), []byte(payload))
 
 	_, err := w.client.EnqueueContext(
 		ctx,
@@ -84,40 +101,40 @@ func (w *Worker) enqueueReindex(ctx context.Context, taskType tasks.TaskType, uu
 		asynq.Timeout(3*time.Minute),
 		asynq.Queue(tasks.QueueReindex),
 		asynq.Retention(24*time.Hour),
-		asynq.TaskID(fmt.Sprintf("%s:%s", string(taskType), uuid)),
+		asynq.TaskID(fmt.Sprintf("%s:%d", string(taskType), id)),
 	)
 
 	if err != nil {
 		if errors.Is(err, asynq.ErrTaskIDConflict) || errors.Is(err, asynq.ErrDuplicateTask) {
-			log.Debug().Str("task", string(taskType)).Str("uuid", uuid).Msg("Reindex task already queued, skipping duplicate")
+			log.Debug().Str("task", string(taskType)).Int64("id", id).Msg("Reindex task already queued, skipping duplicate")
 			return nil
 		}
 		return fmt.Errorf("error enqueueing task: %w", err)
 	}
 
-	log.Debug().Str("task", string(taskType)).Str("uuid", uuid).Msg("Successfully enqueued reindex task")
+	log.Debug().Str("task", string(taskType)).Int64("id", id).Msg("Successfully enqueued reindex task")
 
 	return nil
 }
 
-func (w *Worker) EnqueueReindexImage(ctx context.Context, uuid string) error {
-	if err := w.enqueueReindex(ctx, tasks.TypeReindexImage, uuid); err != nil {
+func (w *Worker) EnqueueReindexImage(ctx context.Context, id int64) error {
+	if err := w.enqueueReindex(ctx, tasks.TypeReindexImage, id); err != nil {
 		return fmt.Errorf("error enqueueing image reindex: %w", err)
 	}
 
 	return nil
 }
 
-func (w *Worker) EnqueueReindexPerson(ctx context.Context, uuid string) error {
-	if err := w.enqueueReindex(ctx, tasks.TypeReindexPerson, uuid); err != nil {
+func (w *Worker) EnqueueReindexPerson(ctx context.Context, id int64) error {
+	if err := w.enqueueReindex(ctx, tasks.TypeReindexPerson, id); err != nil {
 		return fmt.Errorf("error enqueueing image reindex: %w", err)
 	}
 
 	return nil
 }
 
-func (w *Worker) EnqueueReindexTag(ctx context.Context, uuid string) error {
-	if err := w.enqueueReindex(ctx, tasks.TypeReindexTag, uuid); err != nil {
+func (w *Worker) EnqueueReindexTag(ctx context.Context, id int64) error {
+	if err := w.enqueueReindex(ctx, tasks.TypeReindexTag, id); err != nil {
 		return fmt.Errorf("error enqueueing tag reindex: %w", err)
 	}
 
@@ -125,16 +142,16 @@ func (w *Worker) EnqueueReindexTag(ctx context.Context, uuid string) error {
 }
 
 func (w *Worker) handleReindexImage(ctx context.Context, task *asynq.Task) error {
-	uuid := string(task.Payload())
+	id := w.decodeIdPayload(task.Payload())
 
-	log.Info().Str("uuid", uuid).Msg("Executing indexing job for image")
+	log.Info().Int64("id", id).Msg("Executing indexing job for image")
 
-	image, err := w.imageRepository.GetByUUID(ctx, uuid)
+	image, err := w.imageRepository.GetByID(ctx, id)
 	if err != nil {
 		return fmt.Errorf("error getting image: %w", err)
 	}
 
-	if err := w.imageRepository.Reindex(ctx, image); err != nil {
+	if err := w.imageRepository.Index(ctx, image); err != nil {
 		return fmt.Errorf("error reindexing image: %w", err)
 	}
 
@@ -142,11 +159,11 @@ func (w *Worker) handleReindexImage(ctx context.Context, task *asynq.Task) error
 }
 
 func (w *Worker) handleReindexPerson(ctx context.Context, task *asynq.Task) error {
-	uuid := string(task.Payload())
+	id := w.decodeIdPayload(task.Payload())
 
-	log.Info().Str("uuid", uuid).Msg("Executing indexing job for person")
+	log.Info().Int64("id", id).Msg("Executing indexing job for person")
 
-	person, err := w.personService.Get(ctx, uuid)
+	person, err := w.personService.GetByInternalID(ctx, id)
 	if err != nil {
 		return fmt.Errorf("error getting person: %w", err)
 	}
@@ -159,16 +176,16 @@ func (w *Worker) handleReindexPerson(ctx context.Context, task *asynq.Task) erro
 }
 
 func (w *Worker) handleReindexTag(ctx context.Context, task *asynq.Task) error {
-	uuid := string(task.Payload())
+	id := w.decodeIdPayload(task.Payload())
 
-	log.Info().Str("uuid", uuid).Msg("Executing indexing job for tag")
+	log.Info().Int64("id", id).Msg("Executing indexing job for tag")
 
-	tag, err := w.tagRepository.GetByUUID(ctx, uuid)
+	tag, err := w.tagService.GetByInternalID(ctx, id)
 	if err != nil {
-		return fmt.Errorf("error getting tag: %w", err)
+		return fmt.Errorf("error getting person: %w", err)
 	}
 
-	if err := w.tagRepository.Reindex(ctx, tag); err != nil {
+	if err := w.tagService.Index(ctx, tag); err != nil {
 		return fmt.Errorf("error reindexing tag: %w", err)
 	}
 

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
+	"github.com/foresturquhart/curator/server/utils"
 	"github.com/pgvector/pgvector-go"
 )
 
@@ -15,15 +16,6 @@ const (
 	FormatJPEG ImageFormat = "jpeg"
 	FormatPNG  ImageFormat = "png"
 	FormatGIF  ImageFormat = "gif"
-)
-
-// SortDirection specifies the sort order
-type SortDirection string
-
-// Sort direction constants
-const (
-	SortDirectionAsc  SortDirection = "asc"
-	SortDirectionDesc SortDirection = "desc"
 )
 
 // SortBy specifies the field to sort by
@@ -162,8 +154,8 @@ type ImageFilter struct {
 	SimilarityThreshold float64
 
 	// Sorting fields
-	SortBy        SortBy        // Field to sort by (default: created_at)
-	SortDirection SortDirection // Sort direction (default: desc)
+	SortBy        SortBy              // Field to sort by (default: created_at)
+	SortDirection utils.SortDirection // Sort direction (default: desc)
 
 	// Random sorting seed field
 	RandomSeed *string

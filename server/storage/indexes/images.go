@@ -17,13 +17,12 @@ func init() {
 					},
 				},
 			},
-			"md5":         types.KeywordProperty{},
-			"sha1":        types.KeywordProperty{},
-			"width":       types.IntegerNumberProperty{},
-			"height":      types.IntegerNumberProperty{},
-			"pixel_count": types.LongNumberProperty{},
-			"format":      types.KeywordProperty{},
-			"size":        types.LongNumberProperty{},
+			"md5":    types.KeywordProperty{},
+			"sha1":   types.KeywordProperty{},
+			"width":  types.IntegerNumberProperty{},
+			"height": types.IntegerNumberProperty{},
+			"format": types.KeywordProperty{},
+			"size":   types.LongNumberProperty{},
 			"title": types.TextProperty{
 				Analyzer: utils.NewPointer("english"),
 				Fields: map[string]types.Property{
@@ -42,6 +41,8 @@ func init() {
 			},
 			"created_at": types.DateProperty{},
 			"updated_at": types.DateProperty{},
+
+			// Nested properties
 			"tags": types.NestedProperty{
 				Properties: map[string]types.Property{
 					"id":   types.LongNumberProperty{},
@@ -58,7 +59,6 @@ func init() {
 					"added_at": types.DateProperty{},
 				},
 			},
-			"tags_count": types.IntegerNumberProperty{},
 			"people": types.NestedProperty{
 				Properties: map[string]types.Property{
 					"id":   types.LongNumberProperty{},
@@ -111,6 +111,10 @@ func init() {
 					},
 				},
 			},
+
+			// Computed properties
+			"pixel_count": types.LongNumberProperty{},
+			"tags_count":  types.IntegerNumberProperty{},
 		},
 	}
 }

@@ -1,4 +1,4 @@
-package cache
+package storage
 
 import (
 	"context"
@@ -8,11 +8,11 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-type Cache struct {
+type Redis struct {
 	Client *redis.Client
 }
 
-func NewCache(opt *redis.Options) (*Cache, error) {
+func NewRedis(opt *redis.Options) (*Redis, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -22,11 +22,11 @@ func NewCache(opt *redis.Options) (*Cache, error) {
 		return nil, fmt.Errorf("unable to connect to redis: %w", err)
 	}
 
-	return &Cache{
+	return &Redis{
 		Client: client,
 	}, nil
 }
 
-func (s *Cache) Close() error {
+func (s *Redis) Close() error {
 	return s.Client.Close()
 }

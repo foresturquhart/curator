@@ -28,6 +28,8 @@ func init() {
 			},
 			"created_at": types.DateProperty{},
 			"updated_at": types.DateProperty{},
+
+			// Nested properties
 			"sources": types.NestedProperty{
 				Properties: map[string]types.Property{
 					"url": types.TextProperty{

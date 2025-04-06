@@ -8,11 +8,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/davecgh/go-spew/spew"
 	v1 "github.com/foresturquhart/curator/server/api/v1"
 	"github.com/foresturquhart/curator/server/config"
 	"github.com/foresturquhart/curator/server/container"
+	"github.com/foresturquhart/curator/server/models"
 	"github.com/foresturquhart/curator/server/repositories"
 	"github.com/foresturquhart/curator/server/services"
+	"github.com/foresturquhart/curator/server/utils"
 	"github.com/foresturquhart/curator/server/worker"
 	"github.com/labstack/echo/v4"
 	"github.com/rs/zerolog"
@@ -20,6 +23,8 @@ import (
 )
 
 func main() {
+	ctx := context.Background()
+
 	// Load configuration
 	cfg, err := config.Load()
 	if err != nil {
@@ -33,40 +38,40 @@ func main() {
 	}
 
 	// Initialize container with all dependencies
-	c, err := container.NewContainer(cfg)
+	c, err := container.NewContainer(ctx, cfg)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize application container")
 	}
 	defer c.Close()
 
 	// Perform migrations
-	if err := c.Migrate(context.Background()); err != nil {
+	if err := c.Migrate(ctx); err != nil {
 		log.Fatal().Err(err).Msg("Failed to perform migrations")
 	}
 
 	// Initialize repositories
 	imageRepository := repositories.NewImageRepository(c)
-	tagRepository := repositories.NewTagRepository(c)
 	// collectionRepository := repositories.NewCollectionRepository(c)
 
 	// Initialize services
 	personService := services.NewPersonService(c)
+	tagService := services.NewTagService(c)
 
-	if err := imageRepository.ReindexAll(context.Background()); err != nil {
+	if err := imageRepository.IndexAll(ctx); err != nil {
 		log.Fatal().Err(err).Msg("Failed to reindex images")
 	}
-	if err := personService.IndexAll(context.Background()); err != nil {
+	if err := personService.IndexAll(ctx); err != nil {
 		log.Fatal().Err(err).Msg("Failed to reindex people")
 	}
-	if err := tagRepository.ReindexAll(context.Background()); err != nil {
+	if err := tagService.IndexAll(ctx); err != nil {
 		log.Fatal().Err(err).Msg("Failed to reindex tags")
 	}
-	// if err := collectionRepository.ReindexAll(context.Background()); err != nil {
+	// if err := collectionRepository.ReindexAll(ctx); err != nil {
 	// 	log.Fatal().Err(err).Msg("Failed to reindex collections")
 	// }
 
 	// Initialize worker
-	worker, err := worker.NewWorker(c.Cache.Client, imageRepository, tagRepository, personService)
+	worker, err := worker.NewWorker(c, imageRepository, personService, tagService)
 	if err != nil {
 		log.Fatal().Err(err).Msg("Failed to initialize background worker")
 	}
@@ -80,16 +85,27 @@ func main() {
 		}
 	}()
 
+	tag := &models.Tag{
+		Name:        "Finches",
+		Description: utils.NewPointer("Finches are little birds."),
+	}
+
+	err = tagService.Create(ctx, tag, repositories.TagCreateOptions{
+		Action:   repositories.TagHierarchyBefore,
+		TargetID: utils.NewPointer(int64(5)),
+	})
+	if err != nil {
+		log.Fatal().Err(err).Msg("Failed to create tag")
+	}
+	spew.Dump(tag)
+
 	// Set up Echo server
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
 
 	// Register API routes
-	v1.RegisterImageRoutes(e, c, imageRepository)
-	v1.RegisterPersonRoutes(e, c, personService)
-	// v1.RegisterTagRoutes(e, c, tagRepository)
-	// v1.RegisterCollectionRoutes(e, c, collectionRepository)
+	v1.RegisterRoutes(e, c, imageRepository, personService)
 
 	// Start the server
 	go func() {
@@ -104,7 +120,7 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
 	// Stop the worker gracefully

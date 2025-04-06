@@ -10,13 +10,14 @@ import (
 	"github.com/elastic/go-elasticsearch/v8/esapi"
 	elastic_search "github.com/elastic/go-elasticsearch/v8/typedapi/core/search"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types"
-	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/functionboostmode"
 	"github.com/elastic/go-elasticsearch/v8/typedapi/types/enums/sortorder"
 	"github.com/foresturquhart/curator/server/container"
 	"github.com/foresturquhart/curator/server/models"
 	"github.com/foresturquhart/curator/server/utils"
 	"github.com/rs/zerolog/log"
 )
+
+const PeopleIndex = "people"
 
 type PersonSearch struct {
 	container *container.Container
@@ -28,9 +29,10 @@ func NewPersonSearch(container *container.Container) *PersonSearch {
 	}
 }
 
+// Delete removes a document from the Elasticsearch index based on the provided UUID.
 func (s *PersonSearch) Delete(ctx context.Context, uuid string) error {
 	req := esapi.DeleteRequest{
-		Index:      "people",
+		Index:      PeopleIndex,
 		DocumentID: uuid,
 		Refresh:    "true",
 	}
@@ -42,7 +44,7 @@ func (s *PersonSearch) Delete(ctx context.Context, uuid string) error {
 
 	defer func() {
 		if closeErr := res.Body.Close(); closeErr != nil {
-			log.Error().Err(err).Msg("Failed to close Elasticsearch response body")
+			log.Error().Err(closeErr).Msg("Failed to close Elasticsearch response body")
 		}
 	}()
 
@@ -60,25 +62,26 @@ func (s *PersonSearch) Delete(ctx context.Context, uuid string) error {
 	return nil
 }
 
-func (s *PersonSearch) Index(ctx context.Context, person *models.Person) error {
+// Index adds or updates a PersonSearchRecord in the Elasticsearch index.
+func (s *PersonSearch) Index(ctx context.Context, record *models.PersonSearchRecord) error {
 	// Construct the document to index
 	document := map[string]any{
-		"id":         person.ID,
-		"uuid":       person.UUID,
-		"name":       person.Name,
-		"created_at": person.CreatedAt,
-		"updated_at": person.UpdatedAt,
+		"id":         record.ID,
+		"uuid":       record.UUID,
+		"name":       record.Name,
+		"created_at": record.CreatedAt,
+		"updated_at": record.UpdatedAt,
 	}
 
 	// Handle nullable fields
-	if person.Description != nil {
-		document["description"] = *person.Description
+	if record.Description != nil {
+		document["description"] = *record.Description
 	}
 
 	// Add sources
-	if len(person.Sources) > 0 {
-		sources := make([]map[string]any, len(person.Sources))
-		for i, source := range person.Sources {
+	if len(record.Sources) > 0 {
+		sources := make([]map[string]any, len(record.Sources))
+		for i, source := range record.Sources {
 			sourceDoc := map[string]any{
 				"url": source.URL,
 			}
@@ -105,8 +108,8 @@ func (s *PersonSearch) Index(ctx context.Context, person *models.Person) error {
 
 	// Create index request
 	req := esapi.IndexRequest{
-		Index:      "people",
-		DocumentID: person.UUID,
+		Index:      PeopleIndex,
+		DocumentID: record.UUID,
 		Body:       bytes.NewReader(payload),
 		// Make the document immediately searchable
 		Refresh: "true",
@@ -121,7 +124,7 @@ func (s *PersonSearch) Index(ctx context.Context, person *models.Person) error {
 	// Handle potential close error
 	defer func() {
 		if closeErr := res.Body.Close(); closeErr != nil {
-			log.Error().Err(err).Msg("Failed to close Elasticsearch response body")
+			log.Error().Err(closeErr).Msg("Failed to close Elasticsearch response body")
 		}
 	}()
 
@@ -137,9 +140,45 @@ func (s *PersonSearch) Index(ctx context.Context, person *models.Person) error {
 	return nil
 }
 
-func (s *PersonSearch) Search(ctx context.Context, filter *models.PersonFilter) (*models.PaginatedPersonResult, error) {
+// SortBy specifies the field to sort by
+type PersonSortBy string
+
+// Sort field constants for people
+const (
+	PersonSortByRelevance PersonSortBy = "_score"
+	PersonSortByCreatedAt PersonSortBy = "created_at"
+	PersonSortByName      PersonSortBy = "name.keyword"
+)
+
+type PersonSearchOptions struct {
+	// Search
+	Name        string
+	Description string
+
+	// Filters
+	Source     string     // Filter by source URL
+	SinceDate  *time.Time // Records created after this date
+	BeforeDate *time.Time // Records created before this date
+
+	// Sorting
+	SortBy        PersonSortBy
+	SortDirection utils.SortDirection
+
+	// Pagination
+	utils.PaginationOptions
+}
+
+type PersonSearchResult struct {
+	Results    []*models.PersonSearchRecord
+	HasMore    bool
+	TotalCount int64
+	NextCursor []types.FieldValue
+}
+
+// Search executes an Elasticsearch query based on the provided filter, sort, and pagination options.
+func (s *PersonSearch) Search(ctx context.Context, options *PersonSearchOptions) (*PersonSearchResult, error) {
 	// Normalize the limit value
-	limit := filter.Limit
+	limit := options.Limit
 	if limit <= 0 {
 		limit = 50 // default
 	} else if limit > 100 {
@@ -147,13 +186,13 @@ func (s *PersonSearch) Search(ctx context.Context, filter *models.PersonFilter) 
 	}
 
 	// Build the Elasticsearch query
-	query, err := s.prepareSearchQuery(filter, limit)
+	query, err := s.prepareSearchQuery(options, limit)
 	if err != nil {
 		return nil, fmt.Errorf("error building search query: %w", err)
 	}
 
 	// Execute the search
-	res, err := s.container.Elastic.Client.Search().Index("people").Request(query).TrackTotalHits(true).Do(ctx)
+	res, err := s.container.Elastic.Client.Search().Index(PeopleIndex).Request(query).TrackTotalHits(true).Do(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error executing search: %w", err)
 	}
@@ -169,7 +208,7 @@ func (s *PersonSearch) Search(ctx context.Context, filter *models.PersonFilter) 
 	}
 
 	// Convert hits to models
-	people := make([]*models.Person, 0, len(hits))
+	people := make([]*models.PersonSearchRecord, 0, len(hits))
 	var nextCursor []types.FieldValue
 	for i, hit := range hits {
 		person, err := s.hitToPerson(hit)
@@ -184,26 +223,25 @@ func (s *PersonSearch) Search(ctx context.Context, filter *models.PersonFilter) 
 		}
 	}
 
-	// Use the pagination helper to format the response
-	return &models.PaginatedPersonResult{
-		Data:       people,
+	return &PersonSearchResult{
+		Results:    people,
 		HasMore:    hasMore,
 		TotalCount: totalHits,
 		NextCursor: nextCursor,
 	}, nil
 }
 
-func (s *PersonSearch) prepareSearchQuery(filter *models.PersonFilter, limit int) (*elastic_search.Request, error) {
+func (s *PersonSearch) prepareSearchQuery(options *PersonSearchOptions, limit int) (*elastic_search.Request, error) {
 	// Build query clause slices.
 	var filters []types.Query
 	var shoulds []types.Query
 
 	// Apply name filter
-	if filter.Name != "" {
+	if options.Name != "" {
 		shoulds = append(shoulds, types.Query{
 			Match: map[string]types.MatchQuery{
 				"name": {
-					Query: filter.Name,
+					Query: options.Name,
 					Boost: utils.NewPointer(float32(2.0)),
 				},
 			},
@@ -211,18 +249,18 @@ func (s *PersonSearch) prepareSearchQuery(filter *models.PersonFilter, limit int
 	}
 
 	// Apply description filter
-	if filter.Description != "" {
+	if options.Description != "" {
 		shoulds = append(shoulds, types.Query{
 			Match: map[string]types.MatchQuery{
 				"description": {
-					Query: filter.Description,
+					Query: options.Description,
 				},
 			},
 		})
 	}
 
 	// Apply source filter
-	if filter.Source != "" {
+	if options.Source != "" {
 		shoulds = append(shoulds, types.Query{
 			Nested: &types.NestedQuery{
 				Path: "sources",
@@ -232,7 +270,7 @@ func (s *PersonSearch) prepareSearchQuery(filter *models.PersonFilter, limit int
 							{
 								Term: map[string]types.TermQuery{
 									"sources.url.keyword": {
-										Value: filter.Source,
+										Value: options.Source,
 										Boost: utils.NewPointer(float32(2.0)), // Higher boost for exact matches
 									},
 								},
@@ -240,7 +278,7 @@ func (s *PersonSearch) prepareSearchQuery(filter *models.PersonFilter, limit int
 							{
 								Match: map[string]types.MatchQuery{
 									"sources.url": {
-										Query: filter.Source,
+										Query: options.Source,
 										Boost: utils.NewPointer(float32(1.5)), // Lower boost for partial matches
 									},
 								},
@@ -253,14 +291,14 @@ func (s *PersonSearch) prepareSearchQuery(filter *models.PersonFilter, limit int
 	}
 
 	// Apply date filters
-	if filter.SinceDate != nil || filter.BeforeDate != nil {
+	if options.SinceDate != nil || options.BeforeDate != nil {
 		dateRange := types.DateRangeQuery{}
 
-		if filter.SinceDate != nil {
-			dateRange.Gte = utils.NewPointer(filter.SinceDate.Format(time.RFC3339))
+		if options.SinceDate != nil {
+			dateRange.Gte = utils.NewPointer(options.SinceDate.Format(time.RFC3339))
 		}
-		if filter.BeforeDate != nil {
-			dateRange.Lte = utils.NewPointer(filter.BeforeDate.Format(time.RFC3339))
+		if options.BeforeDate != nil {
+			dateRange.Lte = utils.NewPointer(options.BeforeDate.Format(time.RFC3339))
 		}
 
 		filters = append(filters, types.Query{
@@ -270,245 +308,102 @@ func (s *PersonSearch) prepareSearchQuery(filter *models.PersonFilter, limit int
 		})
 	}
 
-	finalBoolQuery := &types.BoolQuery{
-		Must:   filters,
-		Should: shoulds,
-	}
-
 	// Determine sort direction
 	var sortDirection sortorder.SortOrder
-	switch filter.SortDirection {
-	case models.SortDirectionAsc:
+	switch options.SortDirection {
+	case utils.SortDirectionAsc:
 		sortDirection = sortorder.Asc
 	default:
 		sortDirection = sortorder.Desc
 	}
 
+	sortField := string(PersonSortByCreatedAt)
+	if options.SortBy != "" {
+		sortField = string(options.SortBy)
+	}
+
 	// Build the search request based on the sort field
-	var searchRequest *elastic_search.Request
-
-	switch filter.SortBy {
-	case models.PersonSortByCreatorCount:
-		// When sorting by creator count, use a function_score with a script
-		searchRequest = &elastic_search.Request{
-			Size: utils.NewPointer(limit + 1),
-			Query: &types.Query{
-				FunctionScore: &types.FunctionScoreQuery{
-					Query: &types.Query{Bool: finalBoolQuery},
-					Functions: []types.FunctionScore{
-						{
-							ScriptScore: &types.ScriptScoreFunction{
-								Script: types.Script{
-									Source: utils.NewPointer(`
-										int count = 0;
-										if (doc.containsKey('uuid')) {
-											def uuid = doc['uuid'].value;
-											count = searchIndex('images', 'people.uuid:' + uuid + ' AND people.role:creator').count();
-										}
-										return count;
-									`),
-								},
-							},
-						},
-					},
-					BoostMode: &functionboostmode.Replace,
-				},
+	searchRequest := &elastic_search.Request{
+		Size: utils.NewPointer(limit + 1),
+		Query: &types.Query{
+			Bool: &types.BoolQuery{
+				Must:   filters,
+				Should: shoulds,
 			},
-			Sort: []types.SortCombinations{
-				types.SortOptions{
-					SortOptions: map[string]types.FieldSort{
-						"_score": {
-							Order: &sortDirection,
-						},
+		},
+		Sort: []types.SortCombinations{
+			types.SortOptions{
+				SortOptions: map[string]types.FieldSort{
+					sortField: {
+						Order: &sortDirection,
+					},
+					"id": {
+						Order: &sortorder.Asc,
 					},
 				},
 			},
-		}
-
-	case models.PersonSortBySubjectCount:
-		// Similar approach for subject count
-		searchRequest = &elastic_search.Request{
-			Size: utils.NewPointer(limit + 1),
-			Query: &types.Query{
-				FunctionScore: &types.FunctionScoreQuery{
-					Query: &types.Query{Bool: finalBoolQuery},
-					Functions: []types.FunctionScore{
-						{
-							ScriptScore: &types.ScriptScoreFunction{
-								Script: types.Script{
-									Source: utils.NewPointer(`
-										int count = 0;
-										if (doc.containsKey('uuid')) {
-											def uuid = doc['uuid'].value;
-											count = searchIndex('images', 'people.uuid:' + uuid + ' AND people.role:subject').count();
-										}
-										return count;
-									`),
-								},
-							},
-						},
-					},
-					BoostMode: &functionboostmode.Replace,
-				},
-			},
-			Sort: []types.SortCombinations{
-				types.SortOptions{
-					SortOptions: map[string]types.FieldSort{
-						"_score": {
-							Order: &sortDirection,
-						},
-					},
-				},
-			},
-		}
-
-	default:
-		// Standard sorting for other fields
-		sortField := string(models.PersonSortByCreatedAt)
-		if filter.SortBy != "" {
-			sortField = string(filter.SortBy)
-		} else if filter.Name != "" || filter.Description != "" || filter.Source != "" {
-			sortField = string(models.PersonSortByRelevance)
-		}
-
-		searchRequest = &elastic_search.Request{
-			Size:  utils.NewPointer(limit + 1), // Extra document to detect more pages
-			Query: &types.Query{Bool: finalBoolQuery},
-			Sort: []types.SortCombinations{
-				types.SortOptions{
-					SortOptions: map[string]types.FieldSort{
-						sortField: {
-							Order: &sortDirection,
-						},
-						"id": {
-							Order: &sortorder.Asc,
-						},
-					},
-				},
-			},
-		}
+		},
 	}
 
 	// If a StartingAfter cursor is provided, attach it
-	if filter.StartingAfter != nil {
-		searchRequest.SearchAfter = filter.StartingAfter
+	if options.StartingAfter != nil {
+		searchRequest.SearchAfter = options.StartingAfter
 	}
 
 	return searchRequest, nil
 }
 
-// hitToPerson converts an Elasticsearch hit to a Person model
-func (s *PersonSearch) hitToPerson(hit types.Hit) (*models.Person, error) {
-	log.Debug().Interface("score", hit.Score_).Interface("uuid", hit.Id_).Msg("Parsing Elasticsearch hit")
+// rawPersonSearchRecord is a helper type for unmarshalling the Elasticsearch hit source.
+type rawPersonSearchRecord struct {
+	ID          float64                       `json:"id"`
+	UUID        string                        `json:"uuid"`
+	Name        string                        `json:"name"`
+	Description *string                       `json:"description"`
+	CreatedAt   string                        `json:"created_at"`
+	UpdatedAt   string                        `json:"updated_at"`
+	Sources     []rawPersonSearchRecordSource `json:"sources"`
+}
 
-	// Parse the source
-	var source map[string]any
-	err := json.Unmarshal(hit.Source_, &source)
-	if err != nil {
-		return nil, fmt.Errorf("error parsing source: %w", err)
+// rawPersonSearchRecordSource mirrors PersonSearchRecordSource for unmarshalling.
+type rawPersonSearchRecordSource struct {
+	URL         string  `json:"url"`
+	Title       *string `json:"title"`
+	Description *string `json:"description"`
+}
+
+func (s *PersonSearch) hitToPerson(hit types.Hit) (*models.PersonSearchRecord, error) {
+	var raw rawPersonSearchRecord
+	if err := json.Unmarshal(hit.Source_, &raw); err != nil {
+		return nil, fmt.Errorf("error unmarshalling hit source: %w", err)
 	}
 
-	// Inline helper functions for extracting fields.
-	getString := func(key string) (string, error) {
-		val, exists := source[key]
-		if !exists || val == nil {
-			return "", fmt.Errorf("missing %s", key)
-		}
-		s, ok := val.(string)
-		if !ok {
-			return "", fmt.Errorf("field %s is not a string", key)
-		}
-		return s, nil
-	}
-
-	getFloat64 := func(key string) (float64, error) {
-		val, exists := source[key]
-		if !exists || val == nil {
-			return 0, fmt.Errorf("missing %s", key)
-		}
-		f, ok := val.(float64)
-		if !ok {
-			return 0, fmt.Errorf("field %s is not a float64", key)
-		}
-		return f, nil
-	}
-
-	parseTimeField := func(key string) (time.Time, error) {
-		str, err := getString(key)
-		if err != nil {
-			return time.Time{}, err
-		}
-		return time.Parse(time.RFC3339, str)
-	}
-
-	// Parse required fields.
-	idFloat, err := getFloat64("id")
-	if err != nil {
-		return nil, err
-	}
-
-	uuid, err := getString("uuid")
-	if err != nil {
-		return nil, err
-	}
-
-	name, err := getString("name")
-	if err != nil {
-		return nil, err
-	}
-
-	createdAt, err := parseTimeField("created_at")
+	createdAt, err := time.Parse(time.RFC3339, raw.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing created_at: %w", err)
 	}
 
-	updatedAt, err := parseTimeField("updated_at")
+	updatedAt, err := time.Parse(time.RFC3339, raw.UpdatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("error parsing updated_at: %w", err)
 	}
 
-	// Build the base person.
-	person := &models.Person{
-		ID:        int64(idFloat),
-		UUID:      uuid,
-		Name:      name,
-		CreatedAt: createdAt,
-		UpdatedAt: updatedAt,
+	// Convert raw sources to domain sources.
+	var sources []*models.PersonSearchRecordSource
+	for _, src := range raw.Sources {
+		sources = append(sources, &models.PersonSearchRecordSource{
+			URL:         src.URL,
+			Title:       src.Title,
+			Description: src.Description,
+		})
 	}
 
-	// Set description if present
-	if desc, exists := source["description"]; exists && desc != nil {
-		if descStr, ok := desc.(string); ok {
-			person.Description = &descStr
-		}
-	}
-
-	// Process sources if available.
-	if sourcesRaw, exists := source["sources"]; exists && sourcesRaw != nil {
-		sourcesArr, ok := sourcesRaw.([]interface{})
-		if ok {
-			sources := make([]*models.PersonSource, 0, len(sourcesArr))
-			for _, rawSource := range sourcesArr {
-				srcMap, ok := rawSource.(map[string]interface{})
-				if !ok {
-					continue
-				}
-				url, ok := srcMap["url"].(string)
-				if !ok {
-					return nil, fmt.Errorf("source url is not a string")
-				}
-				personSource := &models.PersonSource{URL: url}
-				if t, ok := srcMap["title"].(string); ok {
-					personSource.Title = &t
-				}
-				if d, ok := srcMap["description"].(string); ok {
-					personSource.Description = &d
-				}
-				sources = append(sources, personSource)
-			}
-			person.Sources = sources
-		}
-	}
-
-	return person, nil
+	return &models.PersonSearchRecord{
+		ID:          int64(raw.ID),
+		UUID:        raw.UUID,
+		Name:        raw.Name,
+		Description: raw.Description,
+		CreatedAt:   createdAt,
+		UpdatedAt:   updatedAt,
+		Sources:     sources,
+	}, nil
 }

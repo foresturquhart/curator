@@ -4,7 +4,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Find the root directory
-ROOT_DIR="$(realpath "$SCRIPT_DIR/../..")"
+ROOT_DIR="$(realpath "$SCRIPT_DIR/..")"
 
 # Find the clip service path
 PROTO_DIR="$ROOT_DIR/clip"

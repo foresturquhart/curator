@@ -32,6 +32,9 @@ func NewImageRepository(container *container.Container) *ImageRepository {
 	}
 }
 
+// TODO: when we add or remove tags, we need to dispatch elastic reindexing requests for those tags so the image_count field can be updated
+// TODO: when we add or remove people, we need to dispatch elastic reindexing requests for those people so their image_count fields can be updated
+
 func (r *ImageRepository) reindexElastic(ctx context.Context, image *models.Image) error {
 	// Construct the document to index
 	document := map[string]any{
@@ -168,7 +171,7 @@ func (r *ImageRepository) reindexQdrant(ctx context.Context, image *models.Image
 	return nil
 }
 
-func (r *ImageRepository) Reindex(ctx context.Context, image *models.Image) error {
+func (r *ImageRepository) Index(ctx context.Context, image *models.Image) error {
 	if err := r.reindexElastic(ctx, image); err != nil {
 		return fmt.Errorf("error indexing image in Elastic: %w", err)
 	}
@@ -180,8 +183,8 @@ func (r *ImageRepository) Reindex(ctx context.Context, image *models.Image) erro
 	return nil
 }
 
-func (r *ImageRepository) ReindexAll(ctx context.Context) error {
-	tx, err := r.container.Database.Pool.Begin(ctx)
+func (r *ImageRepository) IndexAll(ctx context.Context) error {
+	tx, err := r.container.Postgres.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -221,7 +224,7 @@ func (r *ImageRepository) ReindexAll(ctx context.Context) error {
 		}
 
 		// Reindex in a new transaction
-		if err := r.Reindex(ctx, image); err != nil {
+		if err := r.Index(ctx, image); err != nil {
 			log.Error().Err(err).Msgf("Error reindexing image %s", image.UUID)
 			continue
 		}
@@ -269,7 +272,7 @@ func (r *ImageRepository) getByIDTx(ctx context.Context, tx pgx.Tx, id int64) (*
 }
 
 func (r *ImageRepository) GetByID(ctx context.Context, id int64) (*models.Image, error) {
-	tx, err := r.container.Database.Pool.Begin(ctx)
+	tx, err := r.container.Postgres.Pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -335,7 +338,7 @@ func (r *ImageRepository) getByUUIDTx(ctx context.Context, tx pgx.Tx, uuid strin
 }
 
 func (r *ImageRepository) GetByUUID(ctx context.Context, uuid string) (*models.Image, error) {
-	tx, err := r.container.Database.Pool.Begin(ctx)
+	tx, err := r.container.Postgres.Pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -364,9 +367,10 @@ func (r *ImageRepository) GetByUUID(ctx context.Context, uuid string) (*models.I
 	return image, nil
 }
 
+// TODO: When we add a child tag, all parent tags (up the tree) should be automatically assigned to the image.
 func (r *ImageRepository) Upsert(ctx context.Context, image *models.Image) error {
 	// Start a transaction
-	tx, err := r.container.Database.Pool.Begin(ctx)
+	tx, err := r.container.Postgres.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -440,6 +444,8 @@ func (r *ImageRepository) Upsert(ctx context.Context, image *models.Image) error
 			return fmt.Errorf("error updating image: %w", err)
 		}
 	} else {
+		// TODO: check for duplicate here and return a conflict error
+
 		// Create new image
 		query := `
 			INSERT INTO images (
@@ -482,7 +488,7 @@ func (r *ImageRepository) Upsert(ctx context.Context, image *models.Image) error
 	}
 
 	// Enqueue reindex after successful storage commit
-	if err := r.container.Worker.EnqueueReindexImage(ctx, image.UUID); err != nil {
+	if err := r.container.Worker.EnqueueReindexImage(ctx, image.ID); err != nil {
 		log.Error().Err(err).Msgf("Failed to queue reindex of image %s", image.UUID)
 	}
 
@@ -793,7 +799,7 @@ func (r *ImageRepository) syncSourceAssociations(ctx context.Context, tx pgx.Tx,
 
 func (r *ImageRepository) Delete(ctx context.Context, uuid string) error {
 	// Start a transaction
-	tx, err := r.container.Database.Pool.Begin(ctx)
+	tx, err := r.container.Postgres.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -1006,7 +1012,7 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 		// Set sort by _score by default when doing similarity search
 		if filter.SortBy == "" {
 			filter.SortBy = models.SortByRelevance
-			filter.SortDirection = models.SortDirectionDesc
+			filter.SortDirection = utils.SortDirectionDesc
 		}
 	}
 
@@ -1193,7 +1199,7 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 	}
 
 	// Apply minimum score
-	minScore := float64(0.5)
+	minScore := float64(0.1)
 	if filter.SimilarityThreshold > 0 {
 		minScore = filter.SimilarityThreshold
 	}
@@ -1229,7 +1235,7 @@ func (r *ImageRepository) prepareSearchQuery(ctx context.Context, filter models.
 
 	var sortDirection sortorder.SortOrder
 	switch filter.SortDirection {
-	case models.SortDirectionAsc:
+	case utils.SortDirectionAsc:
 		sortDirection = sortorder.Asc
 	default:
 		sortDirection = sortorder.Desc

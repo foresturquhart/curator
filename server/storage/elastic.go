@@ -1,4 +1,4 @@
-package elastic
+package storage
 
 import (
 	"context"
@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"github.com/elastic/go-elasticsearch/v8"
-	"github.com/foresturquhart/curator/server/elastic/indexes"
+	"github.com/foresturquhart/curator/server/storage/indexes"
 )
 
 type Elastic struct {

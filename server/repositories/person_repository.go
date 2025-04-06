@@ -55,7 +55,7 @@ func (r *PersonRepository) getByInternalIDTx(ctx context.Context, tx pgx.Tx, id 
 }
 
 func (r *PersonRepository) GetByInternalID(ctx context.Context, id int64) (*models.Person, error) {
-	tx, err := r.container.Database.Pool.Begin(ctx)
+	tx, err := r.container.Postgres.Pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -117,7 +117,7 @@ func (r *PersonRepository) getByUUIDTx(ctx context.Context, tx pgx.Tx, uuid stri
 }
 
 func (r *PersonRepository) GetByUUID(ctx context.Context, uuid string) (*models.Person, error) {
-	tx, err := r.container.Database.Pool.Begin(ctx)
+	tx, err := r.container.Postgres.Pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -147,7 +147,7 @@ func (r *PersonRepository) GetByUUID(ctx context.Context, uuid string) (*models.
 }
 
 // GetByName finds a person by their exact name
-func (r *PersonRepository) GetByName(ctx context.Context, name string) (*models.Person, error) {
+func (r *PersonRepository) getByNameTx(ctx context.Context, tx pgx.Tx, name string) (*models.Person, error) {
 	query := `
         SELECT id, uuid, name, description, created_at, updated_at
         FROM people
@@ -157,7 +157,7 @@ func (r *PersonRepository) GetByName(ctx context.Context, name string) (*models.
 	var person models.Person
 	var descriptionPtr *string
 
-	err := r.container.Database.Pool.QueryRow(ctx, query, name).Scan(
+	err := tx.QueryRow(ctx, query, name).Scan(
 		&person.ID, &person.UUID, &person.Name, &descriptionPtr, &person.CreatedAt, &person.UpdatedAt,
 	)
 
@@ -175,7 +175,7 @@ func (r *PersonRepository) GetByName(ctx context.Context, name string) (*models.
 
 // GetAllIDs retrieves all person IDs from the database.
 func (r *PersonRepository) GetAllIDs(ctx context.Context) ([]int64, error) {
-	rows, err := r.container.Database.Pool.Query(ctx, "SELECT id FROM people ORDER BY id")
+	rows, err := r.container.Postgres.Pool.Query(ctx, "SELECT id FROM people ORDER BY id")
 	if err != nil {
 		return nil, fmt.Errorf("error querying person IDs: %w", err)
 	}
@@ -197,51 +197,38 @@ func (r *PersonRepository) GetAllIDs(ctx context.Context) ([]int64, error) {
 }
 
 // FindImagesByPersonUUID retrieves the image UUIDs associated with a person.
-func (r *PersonRepository) FindImagesByPersonUUID(ctx context.Context, personUUID string) ([]string, error) {
+func (r *PersonRepository) FindImagesByPersonUUID(ctx context.Context, personUUID string) ([]int64, error) {
 	query := `
-        SELECT i.uuid
-        FROM images i
-        INNER JOIN image_people ip ON i.id = ip.image_id
+        SELECT ip.image_id
+        FROM image_people ip
         INNER JOIN people p ON ip.person_id = p.id
         WHERE p.uuid = $1
     `
 
-	rows, err := r.container.Database.Pool.Query(ctx, query, personUUID)
+	rows, err := r.container.Postgres.Pool.Query(ctx, query, personUUID)
 	if err != nil {
 		return nil, fmt.Errorf("error querying images by person UUID: %w", err)
 	}
 	defer rows.Close()
 
-	var imageUUIDs []string
+	var imageIDs []int64
 	for rows.Next() {
-		var imageUUID string
-		if err := rows.Scan(&imageUUID); err != nil {
+		var imageID int64
+		if err := rows.Scan(&imageID); err != nil {
 			return nil, fmt.Errorf("error scanning image UUID: %w", err)
 		}
-		imageUUIDs = append(imageUUIDs, imageUUID)
+		imageIDs = append(imageIDs, imageID)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("error iterating image UUIDs: %w", err)
 	}
 
-	return imageUUIDs, nil
+	return imageIDs, nil
 }
 
 // Create inserts a new person record.
 func (r *PersonRepository) Create(ctx context.Context, person *models.Person) error {
-	existingPerson, err := r.GetByName(ctx, person.Name)
-	if err != nil {
-		return fmt.Errorf("error checking for duplicate names: %w", err)
-	}
-
-	if existingPerson != nil {
-		return &utils.ConflictError{
-			Message:      "A person with this name already exists",
-			ConflictUUID: existingPerson.UUID,
-		}
-	}
-
-	tx, err := r.container.Database.Pool.Begin(ctx)
+	tx, err := r.container.Postgres.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -254,6 +241,18 @@ func (r *PersonRepository) Create(ctx context.Context, person *models.Person) er
 			}
 		}
 	}()
+
+	existingPerson, err := r.getByNameTx(ctx, tx, person.Name)
+	if err != nil {
+		return fmt.Errorf("error checking for duplicate names: %w", err)
+	}
+
+	if existingPerson != nil {
+		return &utils.ConflictError{
+			Message:      "A person with this name already exists",
+			ConflictUUID: existingPerson.UUID,
+		}
+	}
 
 	query := `
         INSERT INTO people (name, description)
@@ -286,19 +285,7 @@ func (r *PersonRepository) Create(ctx context.Context, person *models.Person) er
 
 // Update updates an existing person record.
 func (r *PersonRepository) Update(ctx context.Context, person *models.Person) error {
-	existingPerson, err := r.GetByName(ctx, person.Name)
-	if err != nil {
-		return fmt.Errorf("error checking for duplicate names: %w", err)
-	}
-
-	if existingPerson != nil && existingPerson.UUID != person.UUID {
-		return &utils.ConflictError{
-			Message:      "A person with this name already exists",
-			ConflictUUID: existingPerson.UUID,
-		}
-	}
-
-	tx, err := r.container.Database.Pool.Begin(ctx)
+	tx, err := r.container.Postgres.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("error starting transaction: %w", err)
 	}
@@ -311,6 +298,18 @@ func (r *PersonRepository) Update(ctx context.Context, person *models.Person) er
 			}
 		}
 	}()
+
+	existingPerson, err := r.getByNameTx(ctx, tx, person.Name)
+	if err != nil && !errors.Is(err, utils.ErrPersonNotFound) {
+		return fmt.Errorf("error checking for duplicate name: %w", err)
+	}
+
+	if existingPerson != nil && existingPerson.UUID != person.UUID {
+		return &utils.ConflictError{
+			Message:      "A person with this name already exists",
+			ConflictUUID: existingPerson.UUID,
+		}
+	}
 
 	if person.ID > 0 {
 		existingPerson, err = r.getByInternalIDTx(ctx, tx, person.ID)
@@ -482,7 +481,7 @@ func (r *PersonRepository) syncSourceAssociations(ctx context.Context, tx pgx.Tx
 }
 
 func (r *PersonRepository) Delete(ctx context.Context, uuid string) error {
-	tx, err := r.container.Database.Pool.Begin(ctx)
+	tx, err := r.container.Postgres.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("error starting transaction: %w", err)
 	}
